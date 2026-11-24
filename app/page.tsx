@@ -1,19 +1,45 @@
-import { Button } from "@/components/ui/button"
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
+import { createClient } from "@/lib/supabase-server";
+import { normalizeAnalyticsRole, ROLE_LABELS, type UserRole } from "@/types/auth-roles";
 
-export default function Page() {
-  return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-        <div className="font-mono text-xs text-muted-foreground">
-          (Press <kbd>d</kbd> to toggle dark mode)
-        </div>
-      </div>
-    </div>
-  )
+export const dynamic = "force-dynamic";
+
+export default async function RootPage() {
+  const cookieStore = await cookies();
+  const authToken = cookieStore.get("auth-token")?.value;
+  const userRoleCookie = cookieStore.get("user-role")?.value as UserRole | undefined;
+
+  // Cek apakah ada cookie token otentikasi
+  if (authToken && userRoleCookie && ROLE_LABELS[userRoleCookie]) {
+    redirect(ROLE_LABELS[userRoleCookie].homePath);
+  }
+
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user }
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect("/login");
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("auth_user_id", user.id)
+      .order("id", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    const role = normalizeAnalyticsRole(profile?.role);
+    if (!role) {
+      redirect("/login?error=unauthorized");
+    }
+
+    redirect(ROLE_LABELS[role].homePath);
+  } catch {
+    redirect("/login");
+  }
 }

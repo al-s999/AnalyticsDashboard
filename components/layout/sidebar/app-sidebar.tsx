@@ -1,0 +1,77 @@
+"use client";
+
+import * as React from "react";
+import { useEffect } from "react";
+import { ChevronsUpDown, ShoppingBagIcon, UserCircle2Icon } from "lucide-react";
+import { PlusIcon } from "@radix-ui/react-icons";
+import { usePathname } from "next/navigation";
+import { useIsTablet } from "@/hooks/use-mobile";
+import Link from "next/link";
+import { useI18n } from "@/hooks/use-i18n";
+
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar
+} from "@/components/ui/sidebar";
+import { NavMain } from "@/components/layout/sidebar/nav-main";
+import { NavUser } from "@/components/layout/sidebar/nav-user";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import Image from "next/image";
+
+export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const pathname = usePathname();
+  const { setOpen, setOpenMobile, isMobile } = useSidebar();
+  const isTablet = useIsTablet();
+  const { currentLanguage } = useI18n();
+
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    setOpen(!isTablet);
+  }, [isTablet]);
+
+  return (
+    <Sidebar collapsible="icon" side={currentLanguage === "ar" ? "right" : "left"} {...props}>
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+                <Link href="/dashboard" className="h-14 flex items-center justify-center group-data-[collapsible=icon]:px-0!">
+                  <Image
+                        src="/logo.png"
+                        width={100}
+                        height={100}
+                        className="hidden group-data-[collapsible=icon]:block group-data-[collapsible=icon]:size-12 object-contain mx-auto"
+                        alt="gameforsmart logo"
+                        unoptimized
+                      />
+                  <Image
+                        src="/gameforsmartlogo.png"
+                        width={240}
+                        height={80}
+                        className="w-[220px] max-w-none group-data-[collapsible=icon]:hidden object-contain mx-auto"
+                        alt="gameforsmart logo"
+                        unoptimized
+                      />
+                </Link>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
+      <SidebarContent>
+        <ScrollArea className="h-full">
+          <NavMain />
+        </ScrollArea>
+      </SidebarContent>
+      {/* <SidebarFooter>
+        <NavUser />
+      </SidebarFooter> */}
+    </Sidebar>
+  );
+}
