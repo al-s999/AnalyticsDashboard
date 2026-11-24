@@ -179,10 +179,11 @@ export const GAMEFORSMART_STUDENTS: StudentProfile[] = [
 
 export interface AcademicGroup {
   id: string;
-  name: string;
+  name: string; // Rombongan Belajar, e.g. "Kelas 10-A"
   level: "SD" | "SMP" | "SMA" | "SMK";
   grade: string;
-  subject: string;
+  subjects: string[]; // Daftar mata pelajaran yang diampu guru di rombel ini
+  subject?: string; // Backwards compatibility fallback
   academicYear: string;
   teacherId: string;
   schoolNpsn: string;
@@ -192,11 +193,12 @@ export interface AcademicGroup {
 
 export const INITIAL_TEACHER_GROUPS: AcademicGroup[] = [
   {
-    id: "grp-10a-mat",
-    name: "Kelas 10-A Matematika Wajib",
+    id: "grp-10a",
+    name: "Kelas 10-A",
     level: "SMA",
     grade: "Kelas 10",
-    subject: "Matematika",
+    subjects: ["Matematika Wajib", "Matematika Peminatan"],
+    subject: "Matematika Wajib",
     academicYear: "2025/2026 Ganjil",
     teacherId: "demo-teacher-01",
     schoolNpsn: "20532247",
@@ -204,11 +206,12 @@ export const INITIAL_TEACHER_GROUPS: AcademicGroup[] = [
     createdAt: "2026-08-01"
   },
   {
-    id: "grp-11ipa-mat",
-    name: "Kelas 11-IPA 1 Matematika Peminatan",
+    id: "grp-11ipa1",
+    name: "Kelas 11-IPA 1",
     level: "SMA",
     grade: "Kelas 11",
-    subject: "Matematika",
+    subjects: ["Matematika Peminatan", "Fisika"],
+    subject: "Matematika Peminatan",
     academicYear: "2025/2026 Ganjil",
     teacherId: "demo-teacher-01",
     schoolNpsn: "20532247",

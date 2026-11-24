@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { useAnalyticsAuth } from "@/contexts/analytics-auth-context";
 import { DashboardHeader } from "@/components/dashboard/dashboard-header";
 import { DashboardSidebar } from "@/components/dashboard/dashboard-sidebar";
+import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { ROLE_LABELS } from "@/types/auth-roles";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -51,14 +52,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <DashboardHeader />
-      <div className="flex flex-1">
-        <DashboardSidebar />
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+    <SidebarProvider defaultOpen={true}>
+      <DashboardSidebar />
+      <SidebarInset className="min-w-0 flex flex-1 flex-col">
+        <DashboardHeader />
+        <main className="flex-1 p-4 sm:p-6 lg:p-8">
           {children}
         </main>
-      </div>
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, Suspense } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -271,62 +272,25 @@ function LoginFormInner() {
                 </>
               ) : (
                 <>
-                  <span>Masuk ke Dashboard</span>
+                  <span>Masuk</span>
                   <ArrowRight className="size-3.5" />
                 </>
               )}
             </Button>
           </form>
 
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t border-muted" />
-            </div>
-            <div className="relative flex justify-center text-[10px] uppercase">
-              <span className="bg-card px-2 text-muted-foreground">Atau Masuk Cepat (Akun Demo)</span>
-            </div>
+          {/* Hyperlink ke Halaman Registrasi Pendidik */}
+          <div className="text-center pt-2 border-t">
+            <p className="text-xs text-muted-foreground">
+              Belum memiliki akun?{" "}
+              <Link
+                href="/register"
+                className="font-semibold text-orange-600 hover:text-orange-700 hover:underline dark:text-orange-400"
+              >
+                Daftar di sini
+              </Link>
+            </p>
           </div>
-
-          {/* Quick Demo Login Buttons */}
-          <div className="grid grid-cols-3 gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isSubmitting}
-              onClick={() => handleQuickDemo("teacher")}
-              className="h-12 flex flex-col items-center justify-center p-1 rounded-xl hover:border-orange-500 hover:bg-orange-50/50 dark:hover:bg-orange-950/20"
-            >
-              <GraduationCap className="size-4 text-orange-500" />
-              <span className="text-[10px] font-semibold mt-0.5">Guru</span>
-            </Button>
-
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isSubmitting}
-              onClick={() => handleQuickDemo("school_admin")}
-              className="h-12 flex flex-col items-center justify-center p-1 rounded-xl hover:border-amber-500 hover:bg-amber-50/50 dark:hover:bg-amber-950/20"
-            >
-              <Building2 className="size-4 text-amber-500" />
-              <span className="text-[10px] font-semibold mt-0.5">Sekolah</span>
-            </Button>
-
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={isSubmitting}
-              onClick={() => handleQuickDemo("dinas_kota")}
-              className="h-12 flex flex-col items-center justify-center p-1 rounded-xl hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-950/20"
-            >
-              <Landmark className="size-4 text-blue-500" />
-              <span className="text-[10px] font-semibold mt-0.5">Dinas</span>
-            </Button>
-          </div>
-
-          {/* Google Sign In */}
         </CardContent>
       </Card>
     </div>

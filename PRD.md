@@ -59,9 +59,10 @@ graph TD
 | :--- | :--- | :--- |
 | **Guru (Teacher)** | Pendidik di sekolah yang membina satu atau beberapa kelas pada jenjang/tingkat tertentu. Membutuhkan detail per individu siswa. | Grup/kelas asuhan guru tersebut (dapat lintas jenjang/tingkat sesuai penugasan mengajar). |
 | **Pengelola Sekolah (School Admin / Principal)** | Kepala Sekolah, Wakil Kepala Kurikulum, atau Admin IT Sekolah yang memantau kualitas institusi. | Seluruh kelas, seluruh jenjang, dan seluruh guru di dalam satuan pendidikan (NPSN) yang dikelolanya. |
-| **Dinas Pendidikan Kab/Kota** | Pejabat dinas tingkat kabupaten/kota (misal: Disdik Kota Surabaya). Memantau jenjang PAUD/TK, SD, SMP di daerahnya. | Seluruh sekolah (NPSN) yang berada dalam yurisdiksi kabupaten/kota terkait. |
-| **Dinas Pendidikan Provinsi** | Pejabat dinas tingkat provinsi (misal: Disdik Jawa Timur). Memantau jenjang SMA, SMK, dan SLB. | Seluruh kabupaten/kota dan seluruh sekolah tingkat menengah di provinsi terkait. |
-| **Dinas Pendidikan Nasional** | Kementerian Pendidikan Dasar dan Menengah (Kemendikdasmen). Analisis makro mutu pendidikan nasional. | Agregasi nasional seluruh provinsi, kabupaten/kota, dan sekolah di Indonesia. |
+| **Dinas Pendidikan Kabupaten (`dinas_kab`)** | Pejabat dinas tingkat kabupaten (misal: Disdik Kab. Malang). Memantau seluruh satuan pendidikan di wilayah kabupaten. | Seluruh sekolah (NPSN) di wilayah kabupaten, mencakup jenjang PAUD/TK, SD, SMP, hingga SMA dan SMK di yurisdiksi kabupaten tersebut. |
+| **Dinas Pendidikan Kota (`dinas_kota`)** | Pejabat dinas tingkat kota (misal: Disdik Kota Malang, Disdik Kota Surabaya). Entitas terpisah dari dinas kabupaten dengan cakupan kota mandiri. | Seluruh sekolah (NPSN) di wilayah administratif kota, mencakup jenjang PAUD/TK, SD, SMP, hingga SMA dan SMK di yurisdiksi kota tersebut. |
+| **Dinas Pendidikan Provinsi (`dinas_provinsi`)** | Pejabat dinas tingkat provinsi (misal: Disdik Jawa Timur). Agregasi makro lintas kabupaten/kota. | Seluruh kabupaten & kota dan seluruh satuan pendidikan di provinsi terkait untuk komparasi mutu regional. |
+| **Dinas Pendidikan Nasional (`dinas_nasional`)** | Kementerian Pendidikan Dasar dan Menengah (Kemendikdasmen). Analisis makro mutu pendidikan nasional. | Agregasi nasional seluruh provinsi, kabupaten/kota, dan sekolah di Indonesia. |
 
 ### 3.2 Permission Matrix (Matriks Hak Akses)
 

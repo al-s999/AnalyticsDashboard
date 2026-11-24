@@ -4,21 +4,14 @@ import React, { useState } from "react";
 import {
   BarChart3,
   TrendingUp,
-  Sparkles,
   RefreshCw,
   Clock,
   CheckCircle2,
-  AlertTriangle,
-  BookOpen,
-  ArrowRight,
-  Send,
-  Zap,
-  Target,
-  FileCheck2
+  Target
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -35,9 +28,9 @@ export default function TeacherAnalyticsPage() {
   const [selectedGrade, setSelectedGrade] = useState("Kelas 10");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState(0);
-  const [lastUpdate, setLastUpdate] = useState("Hari ini, 00:00 WIB (Auto-Cron Harian)");
+  const [lastUpdate, setLastUpdate] = useState("Hari ini, 00:00 WIB");
 
-  // Trigger On-Demand AI Analytics Process
+  // Perbarui data nilai dan pemahaman siswa
   const handleTriggerAnalytics = () => {
     setIsRefreshing(true);
     setRefreshProgress(0);
@@ -51,9 +44,9 @@ export default function TeacherAnalyticsPage() {
           const timeStr = `Hari ini, ${now.getHours().toString().padStart(2, "0")}:${now
             .getMinutes()
             .toString()
-            .padStart(2, "0")} WIB (Manual Refresh)`;
+            .padStart(2, "0")} WIB`;
           setLastUpdate(timeStr);
-          toast.success("Snapshot analitik 3 pilar berhasil diperbarui!");
+          toast.success("Data perkembangan siswa berhasil diperbarui!");
           return 100;
         }
         return prev + 25;
@@ -61,26 +54,18 @@ export default function TeacherAnalyticsPage() {
     }, 350);
   };
 
-  const handleSendRemedialAll = () => {
-    toast.success(
-      "Paket remedial preskriptif telah dibuat dan dibagikan secara otomatis ke 3 siswa yang belum tuntas!"
-    );
-  };
+  // Siswa dianggap "Siap" jika nilai >= 75, dan "Tidak Siap" jika < 75
+  const readyStudentsCount = GAMEFORSMART_STUDENTS.filter(
+    (std) => std.predictedExamScore >= 75
+  ).length;
+  const notReadyStudentsCount = GAMEFORSMART_STUDENTS.length - readyStudentsCount;
 
   return (
     <div className="space-y-6">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight">Analitik 3 Pilar Pembelajaran</h1>
-            <Badge className="bg-orange-600 hover:bg-orange-700 text-white text-xs">
-              AI Powered
-            </Badge>
-          </div>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Analisis Deskriptif (kemampuan), Prediktif (estimasi skor & kesiapan ujian), dan Preskriptif (materi belum dikuasai & auto-remedial).
-          </p>
+          <h1 className="text-2xl font-bold tracking-tight">Perkembangan Belajar Siswa</h1>
         </div>
 
         {/* Filter Mapel & Jenjang + Refresh Button */}
@@ -114,31 +99,25 @@ export default function TeacherAnalyticsPage() {
             className="h-9 rounded-xl gap-1.5 text-xs bg-orange-600 hover:bg-orange-700 text-white shadow-sm"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-            <span>{isRefreshing ? "Menganalisa..." : "Perbarui Analitik"}</span>
+            <span>{isRefreshing ? "Memperbarui Data..." : "Perbarui Data"}</span>
           </Button>
         </div>
       </div>
 
-      {/* Snapshot Cache & Progress Bar Status */}
-      <Card className="rounded-2xl border bg-card/60 p-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+      {/* Status Pembaruan Terakhir */}
+      <Card className="rounded-2xl border bg-card/60 p-4 shadow-sm">
+        <div className="flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             <Clock className="w-4 h-4 text-orange-500" />
-            <span>Snapshot Terakhir: <strong className="text-foreground">{lastUpdate}</strong></span>
-            <Badge variant="outline" className="text-[10px] bg-background">
-              Auto-Cron 00:00 WIB
-            </Badge>
-          </div>
-          <div className="text-xs text-muted-foreground">
-            Format Penyimpanan: <code className="font-mono text-orange-600">JSON Snapshot</code>
+            <span>Terakhir Diperbarui: <strong className="text-foreground">{lastUpdate}</strong></span>
           </div>
         </div>
 
         {isRefreshing && (
           <div className="mt-3 space-y-1.5">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-orange-600 font-semibold flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 animate-spin" /> Menarik data kuis & menghitung matriks kesiapan...
+              <span className="text-orange-600 font-semibold">
+                Sedang mengumpulkan nilai kuis dan aktivitas belajar siswa...
               </span>
               <span className="font-bold">{refreshProgress}%</span>
             </div>
@@ -147,24 +126,18 @@ export default function TeacherAnalyticsPage() {
         )}
       </Card>
 
-      {/* 3 PILARS GRID */}
+      {/* 3 KARTU INFORMASI UTAMA */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* PILAR 1: DESKRIPTIF */}
+        {/* KARTU 1: PENGUASAAN MATERI */}
         <Card className="rounded-2xl border shadow-sm flex flex-col justify-between">
           <div>
             <CardHeader className="p-5 pb-3 border-b">
               <div className="flex items-center justify-between">
-                <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 text-[10px]">
-                  Pilar 1: Deskriptif
-                </Badge>
+                <CardTitle className="text-base font-bold text-foreground">
+                  Tingkat Pemahaman Materi
+                </CardTitle>
                 <BarChart3 className="w-4 h-4 text-blue-600" />
               </div>
-              <CardTitle className="text-base font-bold text-foreground mt-2">
-                Analisa Kemampuan Siswa
-              </CardTitle>
-              <CardDescription className="text-xs">
-                Performa penguasaan per topik pada mapel {selectedSubject} {selectedGrade}.
-              </CardDescription>
             </CardHeader>
 
             <CardContent className="p-5 space-y-4">
@@ -192,60 +165,47 @@ export default function TeacherAnalyticsPage() {
               </div>
 
               <div className="p-3 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/50 text-xs text-blue-900 dark:text-blue-200 space-y-1">
-                <strong>Insight Kemampuan:</strong>
+                <strong>Catatan Guru:</strong>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Siswa memiliki pemahaman solid pada Aljabar dan Statistika, namun membutuhkan penguatan di konsep Pertidaksamaan Rasional.
+                  Sebagian besar siswa sudah sangat baik di Aljabar dan Statistika, namun perlu latihan tambahan pada Pertidaksamaan Rasional.
                 </p>
               </div>
             </CardContent>
           </div>
         </Card>
 
-        {/* PILAR 2: PREDIKTIF */}
+        {/* KARTU 2: KESIAPAN UJIAN */}
         <Card className="rounded-2xl border shadow-sm flex flex-col justify-between">
           <div>
             <CardHeader className="p-5 pb-3 border-b">
               <div className="flex items-center justify-between">
-                <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 text-[10px]">
-                  Pilar 2: Prediktif
-                </Badge>
+                <CardTitle className="text-base font-bold text-foreground">
+                  Perkiraan Nilai Ujian
+                </CardTitle>
                 <TrendingUp className="w-4 h-4 text-emerald-600" />
               </div>
-              <CardTitle className="text-base font-bold text-foreground mt-2">
-                Estimasi Skor & Kesiapan Ujian
-              </CardTitle>
-              <CardDescription className="text-xs">
-                Proyeksi kelulusan dan hasil ujian akhir semester pada {selectedSubject}.
-              </CardDescription>
             </CardHeader>
 
             <CardContent className="p-5 space-y-4">
               <div className="p-4 rounded-2xl bg-muted/40 border text-center space-y-1">
-                <span className="text-xs text-muted-foreground">Proyeksi Rerata Nilai Ujian</span>
+                <span className="text-xs text-muted-foreground">Rata-rata Nilai Kelas</span>
                 <div className="text-3xl font-black text-foreground">
                   78.4 <span className="text-sm font-normal text-muted-foreground">/ 100</span>
                 </div>
                 <span className="text-[11px] text-emerald-600 font-semibold block">
-                  ↑ +4.2 poin dibanding bulan sebelumnya
+                  ↑ Meningkat 4.2 poin
                 </span>
               </div>
 
               <div className="space-y-2">
-                <span className="text-xs font-semibold text-foreground">
-                  Distribusi Kesiapan Siswa ({GAMEFORSMART_STUDENTS.length} Siswa):
-                </span>
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center justify-between p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200">
-                    <span className="text-emerald-800 dark:text-emerald-200 font-medium">Sangat Siap (Skor &gt; 85)</span>
-                    <strong className="text-emerald-700">3 Siswa (37.5%)</strong>
-                  </div>
-                  <div className="flex items-center justify-between p-2 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200">
-                    <span className="text-blue-800 dark:text-blue-200 font-medium">Siap (Skor 75 - 84)</span>
-                    <strong className="text-blue-700">3 Siswa (37.5%)</strong>
+                    <span className="text-emerald-800 dark:text-emerald-200 font-medium">Siap</span>
+                    <strong className="text-emerald-700">{readyStudentsCount} Siswa</strong>
                   </div>
                   <div className="flex items-center justify-between p-2 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200">
-                    <span className="text-amber-800 dark:text-amber-200 font-medium">Perlu Pendampingan (&lt; 75)</span>
-                    <strong className="text-amber-700">2 Siswa (25.0%)</strong>
+                    <span className="text-amber-800 dark:text-amber-200 font-medium">Tidak Siap</span>
+                    <strong className="text-amber-700">{notReadyStudentsCount} Siswa</strong>
                   </div>
                 </div>
               </div>
@@ -253,39 +213,29 @@ export default function TeacherAnalyticsPage() {
           </div>
         </Card>
 
-        {/* PILAR 3: PRESKRIPTIF */}
+        {/* KARTU 3: MATERI PERLU PERBAIKAN */}
         <Card className="rounded-2xl border shadow-sm flex flex-col justify-between">
           <div>
             <CardHeader className="p-5 pb-3 border-b">
               <div className="flex items-center justify-between">
-                <Badge className="bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 text-[10px]">
-                  Pilar 3: Preskriptif
-                </Badge>
-                <Sparkles className="w-4 h-4 text-purple-600" />
+                <CardTitle className="text-base font-bold text-foreground">
+                  Bantuan & Latihan Tambahan
+                </CardTitle>
               </div>
-              <CardTitle className="text-base font-bold text-foreground mt-2">
-                Materi Belum Tuntas & Auto-Remedial
-              </CardTitle>
-              <CardDescription className="text-xs">
-                Rekomendasi tindakan otomatis bagi siswa yang belum mencapai target KKM.
-              </CardDescription>
             </CardHeader>
 
             <CardContent className="p-5 space-y-4">
               <div className="space-y-2">
-                <span className="text-xs font-semibold text-foreground">
-                  Materi yang Memerlukan Intervensi:
-                </span>
                 <div className="space-y-2">
                   <div className="p-3 rounded-xl border bg-card space-y-1">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-foreground">Pertidaksamaan Rasional</span>
                       <Badge variant="outline" className="text-[10px] text-red-600 border-red-200">
-                        2 Siswa Belum Tuntas
+                        2 Siswa
                       </Badge>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      Target Siswa: @reza_aditya, @ahmad_fauzi
+                      Siswa: Reza Aditya, Ahmad Fauzi
                     </p>
                   </div>
 
@@ -293,43 +243,27 @@ export default function TeacherAnalyticsPage() {
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-foreground">Pertidaksamaan Logaritma</span>
                       <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-200">
-                        1 Siswa Belum Tuntas
+                        1 Siswa
                       </Badge>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      Target Siswa: @siti_rahma
+                      Siswa: Siti Rahma
                     </p>
                   </div>
                 </div>
-              </div>
-
-              <div className="pt-2">
-                <Button
-                  onClick={handleSendRemedialAll}
-                  className="w-full rounded-xl text-xs gap-1.5 bg-purple-600 hover:bg-purple-700 text-white shadow-sm"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Kirim Paket Kuis Remedial Otomatis</span>
-                </Button>
-                <span className="text-[10px] text-muted-foreground text-center block mt-1.5">
-                  Menugaskan kuis spesifik sesuai materi yang belum dikuasai siswa.
-                </span>
               </div>
             </CardContent>
           </div>
         </Card>
       </div>
 
-      {/* MATRIX SISWA MEMUMPUNI VS PERLU INTERVENSI */}
+      {/* TABEL RINCIAN SISWA */}
       <Card className="rounded-2xl border shadow-sm">
         <CardHeader className="p-5 pb-3 border-b">
           <CardTitle className="text-base font-bold flex items-center gap-2">
             <Target className="w-4 h-4 text-orange-600" />
-            Matriks Kesiapan Siswa ({selectedSubject} - {selectedGrade})
+            Daftar Nilai & Kesiapan Siswa
           </CardTitle>
-          <CardDescription className="text-xs">
-            Daftar lengkap siswa dengan indikator kemampuan, estimasi skor, dan rekomendasi tindak lanjut guru.
-          </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <div className="divide-y overflow-x-auto">
@@ -337,85 +271,60 @@ export default function TeacherAnalyticsPage() {
               <thead>
                 <tr className="bg-muted/40 text-muted-foreground text-left font-medium border-b">
                   <th className="p-3 pl-5">Nama Siswa</th>
-                  <th className="p-3">Level & XP</th>
-                  <th className="p-3">Akurasi Kuis</th>
-                  <th className="p-3">Estimasi Skor Ujian</th>
-                  <th className="p-3">Kategori Kesiapan</th>
-                  <th className="p-3">Materi Belum Tuntas (Preskriptif)</th>
-                  <th className="p-3 pr-5 text-right">Rekomendasi Guru</th>
+                  <th className="p-3">Ketepatan Jawaban</th>
+                  <th className="p-3">Perkiraan Nilai</th>
+                  <th className="p-3">Kesiapan</th>
+                  <th className="p-3 pr-5">Materi Perlu Latihan</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {GAMEFORSMART_STUDENTS.map((std) => (
-                  <tr key={std.id} className="hover:bg-muted/30 transition-colors">
-                    <td className="p-3 pl-5">
-                      <div className="font-semibold text-foreground">{std.fullname}</div>
-                      <div className="text-[11px] text-muted-foreground">@{std.username}</div>
-                    </td>
-                    <td className="p-3">
-                      <Badge variant="outline" className="text-[10px] font-bold">
-                        Lvl {std.level}
-                      </Badge>
-                    </td>
-                    <td className="p-3 font-semibold">{std.accuracyRate}%</td>
-                    <td className="p-3">
-                      <strong className="text-sm font-bold text-foreground">
-                        {std.predictedExamScore}
-                      </strong>
-                      <span className="text-[10px] text-muted-foreground"> / 100</span>
-                    </td>
-                    <td className="p-3">
-                      <Badge
-                        className={`text-[10px] px-2 py-0.5 ${
-                          std.readinessStatus === "Sangat Siap"
+                {GAMEFORSMART_STUDENTS.map((std) => {
+                  const isReady = std.predictedExamScore >= 75;
+                  return (
+                    <tr key={std.id} className="hover:bg-muted/30 transition-colors">
+                      <td className="p-3 pl-5">
+                        <div className="font-semibold text-foreground">{std.fullname}</div>
+                        <div className="text-[11px] text-muted-foreground">{std.username}</div>
+                      </td>
+                      <td className="p-3 font-semibold">{std.accuracyRate}%</td>
+                      <td className="p-3">
+                        <strong className="text-sm font-bold text-foreground">
+                          {std.predictedExamScore}
+                        </strong>
+                        <span className="text-[10px] text-muted-foreground"></span>
+                      </td>
+                      <td className="p-3">
+                        <Badge
+                          className={`text-[10px] px-2 py-0.5 ${isReady
                             ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                            : std.readinessStatus === "Siap"
-                            ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
                             : "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
-                        }`}
-                      >
-                        {std.readinessStatus}
-                      </Badge>
-                    </td>
-                    <td className="p-3 max-w-xs">
-                      {std.unmasteredTopics.length === 0 ? (
-                        <span className="text-emerald-600 font-medium text-[11px] flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Tuntas
-                        </span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {std.unmasteredTopics.map((top, i) => (
-                            <Badge
-                              key={i}
-                              variant="outline"
-                              className="text-[9px] bg-red-50 text-red-700 border-red-200"
-                            >
-                              {top}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-3 pr-5 text-right">
-                      {std.readinessStatus === "Sangat Siap" ? (
-                        <span className="text-[11px] text-emerald-600 font-medium">
-                          Pengayaan Soal Olimpiade / HOTS
-                        </span>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            toast.success(`Paket latihan mandiri dikirimkan ke @${std.username}`);
-                          }}
-                          className="h-7 text-[11px] rounded-xl text-orange-600 hover:text-orange-700 border-orange-200 hover:bg-orange-50"
+                            }`}
                         >
-                          Tugaskan Remedial
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                          {isReady ? "Siap" : "Tidak Siap"}
+                        </Badge>
+                      </td>
+                      <td className="p-3 pr-5 max-w-xs">
+                        {std.unmasteredTopics.length === 0 ? (
+                          <span className="text-emerald-600 font-medium text-[11px] flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Selesai
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {std.unmasteredTopics.map((top, i) => (
+                              <Badge
+                                key={i}
+                                variant="outline"
+                                className="text-[9px] bg-red-50 text-red-700 border-red-200"
+                              >
+                                {top}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -424,4 +333,3 @@ export default function TeacherAnalyticsPage() {
     </div>
   );
 }
-

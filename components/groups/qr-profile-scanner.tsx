@@ -1,69 +1,155 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { Camera, RefreshCw, Upload, Sparkles, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Camera, RefreshCw, Upload, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 interface QrScannerProps {
-  onScanSuccess: (username: string) => void;
+  onScanSuccess: (username: string) => Promise<boolean | void> | boolean | void;
   onClose?: () => void;
+  successMessage?: string | null;
+  onDismissSuccess?: () => void;
 }
 
-export function QrProfileScanner({ onScanSuccess }: QrScannerProps) {
+// Fungsi pembantu global untuk mematikan semua MediaStream video di browser secara aman
+export function stopAllVideoStreams() {
+  try {
+    const allVideos = document.querySelectorAll("video");
+    allVideos.forEach((video) => {
+      const stream = (video as HTMLVideoElement).srcObject as MediaStream;
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {}
+        });
+      }
+      try {
+        (video as HTMLVideoElement).srcObject = null;
+      } catch {}
+    });
+  } catch (e) {
+    console.warn("stopAllVideoStreams error:", e);
+  }
+}
+
+export function QrProfileScanner({
+  onScanSuccess,
+  successMessage,
+  onDismissSuccess
+}: QrScannerProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [detectedText, setDetectedText] = useState<string | null>(null);
   const scannerRef = useRef<any>(null);
+  const isMountedRef = useRef(true);
+  const isProcessingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Parse username dari berbagai kemungkinan format QR GameForSmart
+  // Parse username dari berbagai format QR GameForSmart
   const parseUsernameFromQR = (rawText: string): string => {
     const text = rawText.trim();
-    // 1. Format URL: https://.../profile/budi_santoso atau /profile/budi_santoso
     const profileMatch = text.match(/\/profile\/([a-zA-Z0-9_\-\.]+)/);
     if (profileMatch && profileMatch[1]) {
       return profileMatch[1];
     }
 
-    // 2. Format JSON: {"username": "budi_santoso"}
     try {
       const parsed = JSON.parse(text);
       if (parsed.username) return parsed.username;
     } catch {}
 
-    // 3. Format custom URI: gameforsmart://user/budi_santoso
     const uriMatch = text.match(/user\/([a-zA-Z0-9_\-\.]+)/);
     if (uriMatch && uriMatch[1]) {
       return uriMatch[1];
     }
 
-    // 4. Format string username polos: budi_santoso
     return text.replace(/^@/, "");
   };
 
-  const handleDetected = useCallback((data: string) => {
-    const username = parseUsernameFromQR(data);
-    setDetectedText(username);
-    stopScanner();
-    toast.success(`QR Profil Siswa Terdeteksi: @${username}`);
-    onScanSuccess(username);
-  }, [onScanSuccess]);
-
-  const startScanner = async () => {
-    setCameraError(null);
-    setDetectedText(null);
-    try {
-      setIsScanning(true);
-      const { Html5Qrcode } = await import("html5-qrcode");
-
-      if (scannerRef.current) {
-        try {
-          await scannerRef.current.stop();
-        } catch {}
+  const stopScanner = useCallback(async () => {
+    const scanner = scannerRef.current;
+    if (scanner) {
+      scannerRef.current = null;
+      try {
+        if (scanner.isScanning) {
+          await scanner.stop();
+        }
+      } catch (err: any) {
+        // Abaikan abort/interrupted exception saat stop normal
       }
 
-      const html5QrCode = new Html5Qrcode("qr-reader-target");
+      try {
+        await scanner.clear();
+      } catch {}
+    }
+
+    stopAllVideoStreams();
+
+    if (isMountedRef.current) {
+      setIsScanning(false);
+    }
+  }, []);
+
+  const handleDetected = useCallback(
+    async (data: string) => {
+      if (isProcessingRef.current) return;
+      isProcessingRef.current = true;
+
+      const username = parseUsernameFromQR(data);
+      try {
+        await onScanSuccess(username);
+      } finally {
+        setTimeout(() => {
+          if (isMountedRef.current) {
+            isProcessingRef.current = false;
+          }
+        }, 1200);
+      }
+    },
+    [onScanSuccess]
+  );
+
+  const startScanner = async () => {
+    if (!isMountedRef.current) return;
+    setCameraError(null);
+
+    // Patch global play() pada container target untuk menangkap AbortError dari browser
+    try {
+      const originalPlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        const promise = originalPlay.apply(this, arguments as any);
+        if (promise !== undefined) {
+          promise.catch((error) => {
+            if (error?.name === "AbortError" || error?.message?.includes("interrupted")) {
+              // Menelan AbortError yang disebabkan oleh media element dilepas dari DOM
+              return;
+            }
+            console.debug("Video play error caught safely:", error);
+          });
+        }
+        return promise;
+      };
+    } catch {}
+
+    try {
+      const { Html5Qrcode } = await import("html5-qrcode");
+
+      if (!isMountedRef.current) return;
+
+      const container = document.getElementById("qr-reader-target");
+      if (!container || !isMountedRef.current) {
+        return;
+      }
+
+      // Bersihkan instance lama jika ada
+      if (scannerRef.current) {
+        await stopScanner();
+      }
+
+      const html5QrCode = new Html5Qrcode("qr-reader-target", {
+        verbose: false
+      });
       scannerRef.current = html5QrCode;
 
       await html5QrCode.start(
@@ -80,29 +166,47 @@ export function QrProfileScanner({ onScanSuccess }: QrScannerProps) {
           // ignore scan frame errors
         }
       );
-    } catch (err: any) {
-      console.warn("Camera start warning:", err);
-      setIsScanning(false);
-      setCameraError(
-        "Kamera tidak tersedia atau izin akses ditolak. Anda dapat menggunakan upload foto QR atau simulasi di bawah."
-      );
-    }
-  };
 
-  const stopScanner = async () => {
-    if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current = null;
-      } catch {}
+      if (isMountedRef.current) {
+        setIsScanning(true);
+      } else {
+        await stopScanner();
+      }
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (
+        !isMountedRef.current ||
+        err?.name === "AbortError" ||
+        msg.includes("interrupted") ||
+        msg.includes("abort") ||
+        msg.includes("stopped")
+      ) {
+        stopAllVideoStreams();
+      } else {
+        console.warn("Camera start warning:", err);
+        if (isMountedRef.current) {
+          setIsScanning(false);
+          setCameraError(
+            "Kamera tidak tersedia atau izin akses ditolak. Anda dapat menggunakan upload foto QR atau simulasi di bawah."
+          );
+        }
+      }
     }
-    setIsScanning(false);
   };
 
   useEffect(() => {
-    // Autostart scanner saat tab dibuka
-    startScanner();
+    isMountedRef.current = true;
+
+    // Gunakan timeout kecil agar DOM element stabil sebelum kamera mengikat surface
+    const timer = setTimeout(() => {
+      if (isMountedRef.current) {
+        startScanner();
+      }
+    }, 100);
+
     return () => {
+      isMountedRef.current = false;
+      clearTimeout(timer);
       stopScanner();
     };
   }, []);
@@ -113,7 +217,7 @@ export function QrProfileScanner({ onScanSuccess }: QrScannerProps) {
 
     try {
       const { Html5Qrcode } = await import("html5-qrcode");
-      const scanner = new Html5Qrcode("qr-file-dummy");
+      const scanner = new Html5Qrcode("qr-file-dummy", { verbose: false });
       const result = await scanner.scanFile(file, true);
       handleDetected(result);
     } catch {
@@ -157,16 +261,33 @@ export function QrProfileScanner({ onScanSuccess }: QrScannerProps) {
           </div>
         )}
 
-        {detectedText && (
-          <div className="absolute inset-0 bg-emerald-950/90 z-20 flex flex-col items-center justify-center p-4 text-white text-center">
-            <CheckCircle2 className="w-10 h-10 text-emerald-400 mb-2 animate-bounce" />
-            <span className="text-xs text-emerald-200">Terbaca:</span>
-            <span className="text-lg font-bold">@{detectedText}</span>
+        {/* POP UP NOTIFIKASI SUKSES 1 DETIK & DAPAT DITUTUP LANGSUNG */}
+        {successMessage && (
+          <div
+            onClick={onDismissSuccess}
+            className="absolute inset-x-3 top-3 z-30 p-3 rounded-2xl bg-emerald-600/95 text-white shadow-xl backdrop-blur-md flex items-center justify-between gap-2.5 animate-in fade-in slide-in-from-top-2 duration-200 cursor-pointer border border-emerald-400/40"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <CheckCircle2 className="w-5 h-5 text-white shrink-0 animate-bounce" />
+              <p className="text-xs font-semibold leading-tight truncate">
+                {successMessage}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDismissSuccess?.();
+              }}
+              className="p-1 rounded-full hover:bg-emerald-700/80 transition-colors text-white/90 hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
       </div>
 
-      {/* Aksi Tambahan: Upload File QR */}
+      {/* Aksi Tambahan: Upload File QR & Kontrol Kamera */}
       <div className="w-full flex items-center justify-between gap-2 pt-2 border-t">
         <input
           type="file"
@@ -195,11 +316,11 @@ export function QrProfileScanner({ onScanSuccess }: QrScannerProps) {
         </Button>
       </div>
 
-      {/* Simulasi Cepat QR Profil Siswa (Untuk Kemudahan Testing) */}
+      {/* Simulasi Cepat QR Profil Siswa */}
       <div className="w-full space-y-2 bg-muted/40 p-3 rounded-xl border">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
           <Sparkles className="w-3.5 h-3.5 text-orange-500" />
-          <span>Simulasi Scan QR Profil GameForSmart:</span>
+          <span>Simulasi Scan QR Profil Siswa (Scan Berkelanjutan):</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {[
@@ -223,4 +344,3 @@ export function QrProfileScanner({ onScanSuccess }: QrScannerProps) {
     </div>
   );
 }
-

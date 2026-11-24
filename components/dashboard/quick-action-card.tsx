@@ -35,7 +35,8 @@ const TEXT_HOVER_MAP: Record<ActionColor, string> = {
 export interface QuickActionItem {
   title: string;
   description?: string;
-  href: string;
+  href?: string;
+  onClick?: () => void;
   icon: LucideIcon | React.ComponentType<{ className?: string }>;
   color: ActionColor;
 }
@@ -46,28 +47,39 @@ export function QuickActionCard({ item }: { item: QuickActionItem }) {
   const borderHoverClass = BORDER_HOVER_MAP[item.color] || BORDER_HOVER_MAP.orange;
   const textHoverClass = TEXT_HOVER_MAP[item.color] || TEXT_HOVER_MAP.orange;
 
-  return (
-    <Link href={item.href} className="group block focus:outline-none">
-      <Card
-        className={cn(
-          "flex h-full flex-col items-center justify-center gap-2 rounded-xl border-slate-200 p-4 text-center shadow-sm transition-all dark:border-slate-800 dark:bg-[#111116]",
-          borderHoverClass
-        )}
+  const cardContent = (
+    <Card
+      className={cn(
+        "flex h-full w-full flex-col items-center justify-center gap-2 rounded-xl border-slate-200 p-4 text-center shadow-sm transition-all dark:border-slate-800 dark:bg-[#111116]",
+        borderHoverClass
+      )}
+    >
+      <div className={cn("rounded-lg p-2.5 text-white transition-colors", bgClass)}>
+        <Icon className="size-6 text-white" />
+      </div>
+      <div>
+        <h3 className={cn("text-sm font-semibold transition-colors", textHoverClass)}>
+          {item.title}
+        </h3>
+      </div>
+    </Card>
+  );
+
+  if (item.onClick) {
+    return (
+      <button
+        type="button"
+        onClick={item.onClick}
+        className="group block w-full text-left focus:outline-none cursor-pointer"
       >
-        <div className={cn("rounded-lg p-2.5 text-white transition-colors", bgClass)}>
-          <Icon className="size-6 text-white" />
-        </div>
-        <div>
-          <h3 className={cn("text-sm font-semibold transition-colors", textHoverClass)}>
-            {item.title}
-          </h3>
-          {item.description && (
-            <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">
-              {item.description}
-            </p>
-          )}
-        </div>
-      </Card>
+        {cardContent}
+      </button>
+    );
+  }
+
+  return (
+    <Link href={item.href || "#"} className="group block focus:outline-none">
+      {cardContent}
     </Link>
   );
 }
@@ -87,4 +99,3 @@ export function QuickActionsGrid({
     </div>
   );
 }
-

@@ -16,13 +16,19 @@ import {
   CheckCircle2,
   Sparkles,
   School,
-  ArrowRight
+  ArrowRight,
+  Gamepad2,
+  Send,
+  Bell,
+  Eye,
+  MoreHorizontal
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { StatCard } from "@/components/dashboard/stat-card";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +45,21 @@ import {
   SelectValue
 } from "@/components/ui/select";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator
+} from "@/components/ui/dropdown-menu";
+import {
   INITIAL_TEACHER_GROUPS,
   AcademicGroup,
   StudentProfile,
@@ -48,12 +69,34 @@ import { AddStudentDialog } from "@/components/groups/add-student-dialog";
 import { toast } from "sonner";
 import Link from "next/link";
 
+function getScoreGrade(score: number): string {
+  if (score >= 85) return "A";
+  if (score >= 75) return "B";
+  if (score >= 65) return "C";
+  if (score >= 55) return "D";
+  return "E";
+}
+
+const AVAILABLE_SUBJECTS = [
+  "Matematika Wajib",
+  "Matematika Peminatan",
+  "Fisika",
+  "Kimia",
+  "Biologi",
+  "Informatika",
+  "Bahasa Indonesia",
+  "Bahasa Inggris",
+  "IPAS"
+];
+
 export default function TeacherGroupsPage() {
   const [groups, setGroups] = useState<AcademicGroup[]>(INITIAL_TEACHER_GROUPS);
   const [selectedGroupId, setSelectedGroupId] = useState<string>(
     INITIAL_TEACHER_GROUPS[0].id
   );
   const [searchStudentTerm, setSearchStudentTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [progressFilter, setProgressFilter] = useState<string>("all");
   const [isAddStudentOpen, setIsAddStudentOpen] = useState(false);
   const [isCreateGroupOpen, setIsCreateGroupOpen] = useState(false);
 
@@ -61,7 +104,7 @@ export default function TeacherGroupsPage() {
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupLevel, setNewGroupLevel] = useState<"SD" | "SMP" | "SMA" | "SMK">("SMA");
   const [newGroupGrade, setNewGroupGrade] = useState("Kelas 10");
-  const [newGroupSubject, setNewGroupSubject] = useState("Matematika");
+  const [newGroupSubjects, setNewGroupSubjects] = useState<string[]>(["Matematika Wajib"]);
   const [newGroupYear, setNewGroupYear] = useState("2025/2026 Ganjil");
 
   // Load from localStorage if present
@@ -71,18 +114,27 @@ export default function TeacherGroupsPage() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setGroups(parsed);
-          setSelectedGroupId(parsed[0].id);
+          const normalized = parsed.map((g: any) => ({
+            ...g,
+            subjects:
+              Array.isArray(g.subjects) && g.subjects.length > 0
+                ? g.subjects
+                : g.subject
+                  ? [g.subject]
+                  : ["Matematika Wajib"]
+          }));
+          setGroups(normalized);
+          setSelectedGroupId(normalized[0].id);
         }
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const saveGroups = (updated: AcademicGroup[]) => {
     setGroups(updated);
     try {
       localStorage.setItem("gameforsmart_teacher_groups", JSON.stringify(updated));
-    } catch {}
+    } catch { }
   };
 
   const currentGroup =
@@ -127,6 +179,11 @@ export default function TeacherGroupsPage() {
     toast.info(`${studentName} telah dikeluarkan dari grup.`);
   };
 
+  // Handler: Kirim pengingat tugas
+  const handleSendReminder = (studentName: string, pendingCount: number) => {
+    toast.success(`Pengingat ${pendingCount} tugas berhasil dikirimkan ke ${studentName}`);
+  };
+
   // Handler: Buat Grup Baru
   const handleCreateGroup = (e: React.FormEvent) => {
     e.preventDefault();
@@ -140,7 +197,8 @@ export default function TeacherGroupsPage() {
       name: newGroupName.trim(),
       level: newGroupLevel,
       grade: newGroupGrade,
-      subject: newGroupSubject,
+      subjects: newGroupSubjects.length > 0 ? newGroupSubjects : ["Matematika Wajib"],
+      subject: newGroupSubjects[0] || "Matematika Wajib",
       academicYear: newGroupYear,
       teacherId: "demo-teacher-01",
       schoolNpsn: "20532247",
@@ -153,34 +211,68 @@ export default function TeacherGroupsPage() {
     setSelectedGroupId(newGroup.id);
     setIsCreateGroupOpen(false);
     setNewGroupName("");
-    toast.success(`Grup "${newGroup.name}" berhasil dibuat! Silakan tambahkan siswa.`);
+    setNewGroupSubjects(["Matematika Wajib"]);
+    toast.success(`Rombel "${newGroup.name}" berhasil dibuat! Silakan tambahkan siswa.`);
   };
 
   // Filter siswa di grup aktif
   const filteredStudents = (currentGroup?.students || []).filter((s) => {
     const term = searchStudentTerm.toLowerCase();
-    return (
+    const matchSearch =
+      !term ||
       s.fullname.toLowerCase().includes(term) ||
-      s.username.toLowerCase().includes(term)
-    );
+      s.username.toLowerCase().includes(term);
+
+    if (!matchSearch) return false;
+
+    // Filter Status (Selesai vs Remedial berdasarkan rata-rata >= 75)
+    const score = s.predictedExamScore ?? s.accuracyRate;
+    const isStatusSelesai = score >= 75;
+
+    if (statusFilter === "selesai" && !isStatusSelesai) return false;
+    if (statusFilter === "remedial" && isStatusSelesai) return false;
+
+    // Filter Progres Tugas (Selesai jika tugas tertunda = 0, Belum Selesai jika > 0)
+    const pendingTasks = Math.max(0, s.totalAssignedTasks - s.completedTasksCount);
+    const isProgresSelesai = pendingTasks === 0 && s.totalAssignedTasks > 0;
+
+    if (progressFilter === "selesai" && !isProgresSelesai) return false;
+    if (progressFilter === "belum" && isProgresSelesai) return false;
+
+    return true;
   });
 
-  // Statistik Kesiapan Grup
+  // Statistik & Diagnostik Detail Siswa di Rombel Aktif
   const totalStudents = currentGroup?.students.length || 0;
-  const avgReadinessScore =
-    totalStudents > 0
-      ? Math.round(
-          currentGroup!.students.reduce((acc, s) => acc + s.predictedExamScore, 0) /
-            totalStudents
-        )
-      : 0;
 
-  const countSangatSiap = (currentGroup?.students || []).filter(
-    (s) => s.readinessStatus === "Sangat Siap"
-  ).length;
-  const countPerluPendampingan = (currentGroup?.students || []).filter(
-    (s) => s.readinessStatus === "Perlu Pendampingan" || s.readinessStatus === "Kritis"
-  ).length;
+  // 1. Total Mapel
+  const activeSubjects =
+    currentGroup?.subjects || (currentGroup?.subject ? [currentGroup.subject] : ["Matematika Wajib"]);
+  const totalSubjects = activeSubjects.length;
+
+  // 2. Belum Menyelesaikan Tugas
+  const studentsWithPendingTasks = (currentGroup?.students || []).filter(
+    (s) => s.totalAssignedTasks - s.completedTasksCount > 0
+  );
+  const totalPendingTasksCount = (currentGroup?.students || []).reduce(
+    (acc, s) => acc + Math.max(0, s.totalAssignedTasks - s.completedTasksCount),
+    0
+  );
+
+  // 3. Yang Sudah Siap
+  const readyStudents = (currentGroup?.students || []).filter(
+    (s) => s.readinessStatus === "Sangat Siap" || s.readinessStatus === "Siap"
+  );
+  const percentSiap =
+    totalStudents > 0 ? Math.round((readyStudents.length / totalStudents) * 100) : 0;
+
+  // 4. Butuh Remedial
+  const studentsNeedingRemedial = (currentGroup?.students || []).filter(
+    (s) =>
+      s.readinessStatus === "Perlu Pendampingan" ||
+      s.readinessStatus === "Kritis" ||
+      s.unmasteredTopics.length > 0
+  );
 
   return (
     <div className="space-y-6">
@@ -188,29 +280,42 @@ export default function TeacherGroupsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight">Manajemen Grup & Murid</h1>
-            <Badge variant="outline" className="text-xs bg-orange-50 text-orange-700 dark:bg-orange-950/40">
-              Pengawasan Guru
-            </Badge>
+            <h1 className="text-2xl font-bold tracking-tight">Kelola Siswa</h1>
           </div>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Kelola grup kelas binaan, daftarkan siswa via ketik username / scan QR profil, dan monitor kesiapan mereka.
-          </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Dropdown Pemilih Grup / Kelas */}
+          <Select value={selectedGroupId} onValueChange={setSelectedGroupId}>
+            <SelectTrigger className="h-9 w-fit min-w-[140px] max-w-[240px] text-xs font-semibold rounded-xl bg-background border-orange-200 dark:border-zinc-800 shadow-2xs gap-2.5">
+              <div className="flex items-center gap-2 truncate min-w-0">
+                <Users className="w-3.5 h-3.5 text-orange-600 shrink-0" />
+                <SelectValue placeholder="Pilih Kelas yang Diampu" />
+              </div>
+            </SelectTrigger>
+            <SelectContent>
+              {groups.map((group) => (
+                <SelectItem key={group.id} value={group.id} className="text-xs">
+                  <span className="font-semibold">{group.name}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Button
             onClick={() => setIsCreateGroupOpen(true)}
             variant="outline"
-            className="rounded-xl gap-1.5 shadow-sm"
+            size="sm"
+            className="h-9 rounded-xl gap-1.5 text-xs shadow-sm"
           >
             <Plus className="w-4 h-4 text-orange-600" />
-            <span>Buat Grup Baru</span>
+            <span>Buat Grup</span>
           </Button>
           <Button
             onClick={() => setIsAddStudentOpen(true)}
             disabled={!currentGroup}
-            className="rounded-xl gap-2 bg-orange-600 hover:bg-orange-700 text-white shadow-sm"
+            size="sm"
+            className="h-9 rounded-xl gap-2 bg-orange-600 hover:bg-orange-700 text-white text-xs shadow-sm"
           >
             <UserPlus className="w-4 h-4" />
             <span>Tambah Siswa</span>
@@ -218,119 +323,50 @@ export default function TeacherGroupsPage() {
         </div>
       </div>
 
-      {/* Group Navigation Chips / Selector */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 border-b">
-        {groups.map((group) => {
-          const isSelected = group.id === selectedGroupId;
-          return (
-            <button
-              key={group.id}
-              onClick={() => setSelectedGroupId(group.id)}
-              className={`px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-2 border ${
-                isSelected
-                  ? "bg-orange-600 text-white border-orange-600 shadow-sm"
-                  : "bg-card text-muted-foreground hover:text-foreground hover:bg-muted/60 border-transparent"
-              }`}
-            >
-              <Users className="w-3.5 h-3.5" />
-              <span>{group.name}</span>
-              <Badge
-                variant={isSelected ? "secondary" : "outline"}
-                className={`text-[10px] px-1.5 py-0 ${
-                  isSelected ? "bg-white/20 text-white" : ""
-                }`}
-              >
-                {group.students.length} Siswa
-              </Badge>
-            </button>
-          );
-        })}
-      </div>
-
       {currentGroup && (
         <>
-          {/* Group Overview Banner & Analytics Teaser */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <Card className="rounded-2xl border bg-card/60">
-              <CardHeader className="p-4 pb-2">
-                <CardDescription className="text-xs">Informasi Grup</CardDescription>
-                <CardTitle className="text-base font-bold text-foreground">
-                  {currentGroup.name}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-1 space-y-1 text-xs text-muted-foreground">
-                <div className="flex items-center justify-between">
-                  <span>Mata Pelajaran:</span>
-                  <span className="font-semibold text-foreground">{currentGroup.subject}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Jenjang / Tingkat:</span>
-                  <span className="font-semibold text-foreground">
-                    {currentGroup.level} • {currentGroup.grade}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Tahun Ajaran:</span>
-                  <span className="font-semibold text-foreground">{currentGroup.academicYear}</span>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-2xl border bg-card/60">
-              <CardHeader className="p-4 pb-2">
-                <CardDescription className="text-xs">Rerata Skor Prediksi</CardDescription>
-                <CardTitle className="text-2xl font-black text-foreground flex items-center gap-2">
-                  <span>{avgReadinessScore}</span>
-                  <span className="text-xs font-normal text-muted-foreground">/ 100</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-1 text-xs text-muted-foreground">
-                Berdasarkan performa akurasi kuis dan sesi belajar mandiri di GameForSmart.
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-2xl border bg-card/60">
-              <CardHeader className="p-4 pb-2">
-                <CardDescription className="text-xs">Siswa Sangat Siap</CardDescription>
-                <CardTitle className="text-2xl font-black text-emerald-600 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                  <span>{countSangatSiap} Siswa</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-1 text-xs text-muted-foreground">
-                Siap mengikuti ujian materi tanpa hambatan indikator kompetensi.
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-2xl border bg-card/60">
-              <CardHeader className="p-4 pb-2">
-                <CardDescription className="text-xs">Butuh Pendampingan</CardDescription>
-                <CardTitle className="text-2xl font-black text-amber-600 flex items-center gap-1.5">
-                  <AlertTriangle className="w-5 h-5 text-amber-500" />
-                  <span>{countPerluPendampingan} Siswa</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-1 text-xs text-muted-foreground">
-                Memerlukan tugas remedial preskriptif untuk materi yang belum tuntas.
-              </CardContent>
-            </Card>
+          {/* KPI Cards: Total Mapel, Belum Menyelesaikan Tugas, Yang Sudah Siap, Butuh Remedial */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              title="Total Mapel"
+              value={`${totalSubjects}`}
+              icon="school"
+            />
+            <StatCard
+              title="Tugas Belum Selesai"
+              value={`${studentsWithPendingTasks.length} Siswa`}
+              icon="puzzle"
+            />
+            <StatCard
+              title="Siswa Siap"
+              value={`${readyStudents.length} Siswa`}
+              icon="accuracy"
+            />
+            <StatCard
+              title="Remedial"
+              value={`${studentsNeedingRemedial.length} Siswa`}
+              icon="alert"
+            />
           </div>
 
-          {/* Student Roster Section */}
-          <Card className="rounded-2xl border shadow-sm">
-            <CardHeader className="p-5 pb-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          {/* Student Roster Section (Seperti di Dashboard Guru) */}
+          <Card className="rounded-2xl border shadow-sm overflow-hidden">
+            <CardHeader className="px-4 py-2 border-b flex flex-col md:flex-row md:items-center md:justify-between gap-3">
               <div>
                 <CardTitle className="text-base font-bold flex items-center gap-2">
                   <Users className="w-4 h-4 text-orange-600" />
-                  Daftar Siswa Terdaftar ({currentGroup.students.length})
+                  Daftar Siswa ({filteredStudents.length}
+                  {filteredStudents.length !== (currentGroup.students.length || 0) && (
+                    <span className="text-xs text-muted-foreground font-normal">
+                      dari {currentGroup.students.length}
+                    </span>
+                  )}
+                  )
                 </CardTitle>
-                <CardDescription className="text-xs mt-0.5">
-                  Dua metode registrasi: ketik username siswa atau scan QR code langsung dari profil GameForSmart murid.
-                </CardDescription>
               </div>
 
-              <div className="flex items-center gap-2">
-                <div className="relative w-full sm:w-60">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative w-full sm:w-48 lg:w-56">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                   <Input
                     placeholder="Cari nama atau @username..."
@@ -339,6 +375,67 @@ export default function TeacherGroupsPage() {
                     className="pl-8 h-8 text-xs rounded-xl"
                   />
                 </div>
+
+                {/* Filter Status */}
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="h-8 w-32 text-xs rounded-xl bg-background border-muted-foreground/20">
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl">
+                    <SelectItem value="all" className="text-xs">Semua Status</SelectItem>
+                    <SelectItem value="selesai" className="text-xs">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                        Selesai
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="remedial" className="text-xs">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" />
+                        Remedial
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+
+                {/* Filter Progres */}
+                <Select value={progressFilter} onValueChange={setProgressFilter}>
+                  <SelectTrigger className="h-8 w-36 text-xs rounded-xl bg-background border-muted-foreground/20">
+                    <SelectValue placeholder="Progres" />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl">
+                    <SelectItem value="all" className="text-xs">Semua Progres</SelectItem>
+                    <SelectItem value="selesai" className="text-xs">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                        Tugas Selesai
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="belum" className="text-xs">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />
+                        Belum Selesai
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+
+                {(statusFilter !== "all" || progressFilter !== "all" || searchStudentTerm) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setStatusFilter("all");
+                      setProgressFilter("all");
+                      setSearchStudentTerm("");
+                    }}
+                    className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground rounded-xl"
+                    title="Reset Filter"
+                  >
+                    Reset
+                  </Button>
+                )}
+
                 <Button
                   size="sm"
                   variant="outline"
@@ -346,7 +443,7 @@ export default function TeacherGroupsPage() {
                   className="h-8 text-xs rounded-xl gap-1 shrink-0"
                 >
                   <QrCode className="w-3.5 h-3.5 text-orange-600" />
-                  <span>Scan QR / Tambah</span>
+                  <span>Scan QR</span>
                 </Button>
               </div>
             </CardHeader>
@@ -358,123 +455,190 @@ export default function TeacherGroupsPage() {
                     <UserPlus className="w-6 h-6" />
                   </div>
                   <div>
-                    <h4 className="font-semibold text-sm">Belum Ada Siswa di Grup Ini</h4>
+                    <h4 className="font-semibold text-sm">Belum Ada Siswa</h4>
                     <p className="text-xs text-muted-foreground max-w-sm mx-auto mt-1">
-                      Klik tombol di bawah untuk memasukkan siswa dengan mengetik username atau memindai QR code profil murid.
+                      {searchStudentTerm || statusFilter !== "all" || progressFilter !== "all"
+                        ? `Tidak ada siswa yang sesuai dengan filter yang dipilih.`
+                        : "Klik tombol di bawah untuk memasukkan siswa dengan mengetik username atau memindai QR code profil murid."}
                     </p>
                   </div>
-                  <Button
-                    onClick={() => setIsAddStudentOpen(true)}
-                    className="rounded-xl text-xs bg-orange-600 hover:bg-orange-700 text-white"
-                  >
-                    <UserPlus className="w-3.5 h-3.5 mr-1.5" /> Tambah Siswa Sekarang
-                  </Button>
+                  {!searchStudentTerm && statusFilter === "all" && progressFilter === "all" && (
+                    <Button
+                      onClick={() => setIsAddStudentOpen(true)}
+                      className="rounded-xl text-xs bg-orange-600 hover:bg-orange-700 text-white"
+                    >
+                      <UserPlus className="w-3.5 h-3.5 mr-1.5" /> Tambah Siswa
+                    </Button>
+                  )}
                 </div>
               ) : (
-                <div className="divide-y overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-muted/40 text-muted-foreground text-left font-medium border-b">
-                        <th className="p-3 pl-5">Siswa</th>
-                        <th className="p-3">Level & XP</th>
-                        <th className="p-3">Akurasi Kuis</th>
-                        <th className="p-3">Prediksi Skor Ujian</th>
-                        <th className="p-3">Kesiapan Ujian</th>
-                        <th className="p-3">Materi Belum Dikuasai (Preskriptif)</th>
-                        <th className="p-3 pr-5 text-right">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {filteredStudents.map((student) => (
-                        <tr key={student.id} className="hover:bg-muted/30 transition-colors">
-                          <td className="p-3 pl-5">
-                            <div className="flex items-center gap-2.5">
-                              <Avatar className="w-8 h-8 border">
-                                <AvatarImage src={student.avatarUrl} alt={student.fullname} />
-                                <AvatarFallback>{student.fullname.slice(0, 2).toUpperCase()}</AvatarFallback>
-                              </Avatar>
-                              <div>
-                                <span className="font-semibold text-foreground block">{student.fullname}</span>
-                                <span className="text-[11px] text-muted-foreground">@{student.username}</span>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent bg-muted/40">
+                        <TableHead className="font-semibold text-xs py-3 pl-5">Nama Siswa</TableHead>
+                        <TableHead className="font-semibold text-xs py-3">Progres</TableHead>
+                        <TableHead className="font-semibold text-xs py-3">Rata-rata</TableHead>
+                        <TableHead className="font-semibold text-xs py-3">Status</TableHead>
+                        <TableHead className="font-semibold text-xs py-3 pr-5 w-16 text-center">Aksi</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredStudents.map((student) => {
+                        const score = student.predictedExamScore ?? student.accuracyRate;
+                        const pendingTasks = Math.max(0, student.totalAssignedTasks - student.completedTasksCount);
+                        const isSelesai = score >= 75;
+                        const isProgresSelesai = pendingTasks === 0 && student.totalAssignedTasks > 0;
+                        const progressPercent =
+                          student.totalAssignedTasks > 0
+                            ? Math.min(
+                              100,
+                              Math.round(
+                                (student.completedTasksCount / student.totalAssignedTasks) * 100
+                              )
+                            )
+                            : 0;
+
+                        return (
+                          <TableRow key={student.id} className="hover:bg-muted/30 transition-colors">
+                            {/* Nama Siswa */}
+                            <TableCell className="pl-5 py-3">
+                              <div className="flex items-center gap-3">
+                                <Avatar className="size-8 border">
+                                  <AvatarImage src={student.avatarUrl} alt={student.fullname} />
+                                  <AvatarFallback className="text-xs bg-orange-100 text-orange-700">
+                                    {student.fullname.slice(0, 2).toUpperCase()}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-xs text-foreground truncate">
+                                    {student.fullname}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground truncate">
+                                    @{student.username}
+                                  </div>
+                                </div>
                               </div>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <div className="flex items-center gap-1.5">
-                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-bold">
-                                Lvl {student.level}
-                              </Badge>
-                              <span className="text-[11px] text-muted-foreground">{student.xp} XP</span>
-                            </div>
-                          </td>
-                          <td className="p-3 font-semibold">{student.accuracyRate}%</td>
-                          <td className="p-3">
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-foreground text-sm">
-                                {student.predictedExamScore}
-                              </span>
-                              <span className="text-[10px] text-muted-foreground">/ 100</span>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <Badge
-                              className={`text-[10px] px-2 py-0.5 ${
-                                student.readinessStatus === "Sangat Siap"
-                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                  : student.readinessStatus === "Siap"
-                                  ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                                  : student.readinessStatus === "Perlu Pendampingan"
-                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
-                                  : "bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300"
-                              }`}
-                            >
-                              {student.readinessStatus}
-                            </Badge>
-                          </td>
-                          <td className="p-3 max-w-xs">
-                            {student.unmasteredTopics.length === 0 ? (
-                              <span className="text-emerald-600 font-medium text-[11px] flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> Semua Kompetensi Tuntas
-                              </span>
-                            ) : (
-                              <div className="flex flex-wrap gap-1">
-                                {student.unmasteredTopics.map((topic, i) => (
-                                  <Badge
-                                    key={i}
-                                    variant="outline"
-                                    className="text-[10px] bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-900"
-                                  >
-                                    {topic}
-                                  </Badge>
-                                ))}
+                            </TableCell>
+
+                            {/* Progres Tugas (Selesai atau Belum Selesai) */}
+                            <TableCell className="py-3 text-xs">
+                              <div className="flex flex-col gap-1.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-foreground">
+                                    {student.completedTasksCount}/{student.totalAssignedTasks}
+                                  </span>
+                                  {isProgresSelesai ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px] font-medium py-0 px-1.5 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20"
+                                    >
+                                      Selesai
+                                    </Badge>
+                                  ) : (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px] font-medium py-0 px-1.5 bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"
+                                    >
+                                      Belum Selesai
+                                    </Badge>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                          </td>
-                          <td className="p-3 pr-5 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              <Link href="/dashboard/teacher/tasks">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 text-[11px] text-orange-600 hover:text-orange-700 hover:bg-orange-50 dark:hover:bg-orange-950/30 px-2"
+                            </TableCell>
+
+                            {/* Rata-rata */}
+                            <TableCell className="py-3 text-xs">
+                              <span className="font-semibold text-foreground">
+                                {score}{" "}
+                                <span className={isSelesai ? "text-muted-foreground font-normal" : "text-rose-600 dark:text-rose-400 font-normal"}>
+                                </span>
+                              </span>
+                            </TableCell>
+
+                            {/* Status */}
+                            <TableCell className="py-3">
+                              {isSelesai ? (
+                                <Badge
+                                  className="text-[10px] font-medium py-0 px-2 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20"
                                 >
-                                  Beri Task
-                                </Button>
-                              </Link>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleRemoveStudent(student.id, student.fullname)}
-                                className="h-7 w-7 p-0 text-muted-foreground hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                                  Selesai
+                                </Badge>
+                              ) : (
+                                <Badge
+                                  className="text-[10px] font-medium py-0 px-2 bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/20"
+                                >
+                                  Remedial
+                                </Badge>
+                              )}
+                            </TableCell>
+
+                            {/* Aksi (Hanya Titik Tiga, Opsi Kondisional di Dalam Dropdown) */}
+                            <TableCell className="py-3 pr-5 text-center">
+                              <div className="flex justify-center">
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="size-7 text-muted-foreground hover:text-foreground rounded-lg"
+                                    >
+                                      <MoreHorizontal className="size-4" />
+                                      <span className="sr-only">Menu aksi</span>
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-44 rounded-xl">
+                                    <DropdownMenuItem asChild>
+                                      <Link
+                                        href="/dashboard/teacher/analytics"
+                                        className="cursor-pointer flex items-center gap-2 text-xs"
+                                      >
+                                        <Eye className="size-3.5 text-muted-foreground" />
+                                        <span>Lihat Detail</span>
+                                      </Link>
+                                    </DropdownMenuItem>
+
+                                    {/* Opsi Remedial jika status remedial */}
+                                    {!isSelesai && (
+                                      <DropdownMenuItem asChild>
+                                        <Link
+                                          href="/dashboard/teacher/tasks"
+                                          className="cursor-pointer flex items-center gap-2 text-xs text-orange-600 focus:text-orange-600 focus:bg-orange-50 dark:focus:bg-orange-950/40"
+                                        >
+                                          <Send className="size-3.5 text-orange-600" />
+                                          <span>Beri Remedial</span>
+                                        </Link>
+                                      </DropdownMenuItem>
+                                    )}
+
+                                    {/* Opsi Ingatkan jika ada tugas belum selesai */}
+                                    {pendingTasks > 0 && (
+                                      <DropdownMenuItem
+                                        onClick={() => handleSendReminder(student.fullname, pendingTasks)}
+                                        className="cursor-pointer flex items-center gap-2 text-xs text-amber-600 focus:text-amber-600 focus:bg-amber-50 dark:focus:bg-amber-950/40"
+                                      >
+                                        <Bell className="size-3.5 text-amber-600" />
+                                        <span>Ingatkan Tugas ({pendingTasks})</span>
+                                      </DropdownMenuItem>
+                                    )}
+
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      onClick={() => handleRemoveStudent(student.id, student.fullname)}
+                                      className="cursor-pointer flex items-center gap-2 text-xs text-rose-600 focus:text-rose-600 focus:bg-rose-50 dark:focus:bg-rose-950/40"
+                                    >
+                                      <Trash2 className="size-3.5" />
+                                      <span>Delete</span>
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
                 </div>
               )}
             </CardContent>
@@ -500,15 +664,15 @@ export default function TeacherGroupsPage() {
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2">
               <Users className="w-5 h-5 text-orange-600" />
-              Buat Grup Kelas Pengawasan Baru
+              Buat Group
             </DialogTitle>
           </DialogHeader>
 
           <form onSubmit={handleCreateGroup} className="space-y-4 mt-2">
             <div className="space-y-1.5">
-              <Label className="text-xs">Nama Grup / Kelas</Label>
+              <Label className="text-xs">Nama Rombel / Kelas</Label>
               <Input
-                placeholder="Contoh: Kelas 10-C Matematika Wajib"
+                placeholder="Contoh: Kelas 10-A, Kelas 11-IPA 1"
                 value={newGroupName}
                 onChange={(e) => setNewGroupName(e.target.value)}
                 required
@@ -556,25 +720,41 @@ export default function TeacherGroupsPage() {
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label className="text-xs">Mata Pelajaran</Label>
-              <Select
-                value={newGroupSubject}
-                onValueChange={(v: any) => setNewGroupSubject(v)}
-              >
-                <SelectTrigger className="rounded-xl text-xs">
-                  <SelectValue placeholder="Pilih Mapel" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Matematika">Matematika</SelectItem>
-                  <SelectItem value="Fisika">Fisika</SelectItem>
-                  <SelectItem value="Kimia">Kimia</SelectItem>
-                  <SelectItem value="Biologi">Biologi</SelectItem>
-                  <SelectItem value="Bahasa Indonesia">Bahasa Indonesia</SelectItem>
-                  <SelectItem value="Bahasa Inggris">Bahasa Inggris</SelectItem>
-                  <SelectItem value="Informatika">Informatika</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Mata Pelajaran yang Diampu</Label>
+                <span className="text-[10px] text-muted-foreground">Pilih 1 atau lebih</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 p-2.5 rounded-xl border bg-muted/20">
+                {AVAILABLE_SUBJECTS.map((subj) => {
+                  const isSelected = newGroupSubjects.includes(subj);
+                  return (
+                    <button
+                      type="button"
+                      key={subj}
+                      onClick={() => {
+                        if (isSelected) {
+                          if (newGroupSubjects.length > 1) {
+                            setNewGroupSubjects(newGroupSubjects.filter((s) => s !== subj));
+                          } else {
+                            toast.error("Minimal pilih 1 mata pelajaran");
+                          }
+                        } else {
+                          setNewGroupSubjects([...newGroupSubjects, subj]);
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all flex items-center gap-1 border ${isSelected
+                        ? "bg-orange-600 text-white border-orange-600 shadow-2xs"
+                        : "bg-background text-muted-foreground hover:text-foreground hover:bg-muted border-border"
+                        }`}
+                    >
+                      <BookOpen className="w-3 h-3" />
+                      <span>{subj}</span>
+                      {isSelected && <span className="ml-0.5 text-[10px]">✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="space-y-1.5">
