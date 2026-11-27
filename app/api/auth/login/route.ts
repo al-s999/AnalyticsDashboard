@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { resolveCookieScope } from "@/lib/auth-redirect";
+import { getSupabaseAdminClient } from "@/lib/tasks/server";
 import { normalizeAnalyticsRole, ROLE_LABELS, type AnalyticsUser, DEMO_USERS } from "@/types/auth-roles";
 
 export const dynamic = "force-dynamic";
@@ -54,9 +55,10 @@ export async function POST(request: NextRequest) {
 
     let emailToUse = emailOrUsername;
 
-    // Jika input bukan email, cari email berdasarkan username di tabel profiles
+    // Jika input bukan email, cari email berdasarkan username di tabel profiles (pakai admin client agar tidak terhalang RLS)
     if (!emailOrUsername.includes("@")) {
-      const { data: profileByUsername, error: usernameError } = await supabase
+      const adminSupabase = getSupabaseAdminClient();
+      const { data: profileByUsername, error: usernameError } = await adminSupabase
         .from("profiles")
         .select("email, role")
         .ilike("username", emailOrUsername)

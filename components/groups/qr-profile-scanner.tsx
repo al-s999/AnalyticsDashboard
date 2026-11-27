@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { Camera, RefreshCw, Upload, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
+import { Camera, RefreshCw, Upload, AlertCircle, CheckCircle2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -114,6 +114,13 @@ export function QrProfileScanner({
     if (!isMountedRef.current) return;
     setCameraError(null);
 
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError(
+        "Akses kamera membutuhkan koneksi HTTPS atau localhost. Anda dapat menggunakan tombol Upload Foto QR di bawah."
+      );
+      return;
+    }
+
     // Patch global play() pada container target untuk menangkap AbortError dari browser
     try {
       const originalPlay = HTMLMediaElement.prototype.play;
@@ -152,20 +159,34 @@ export function QrProfileScanner({
       });
       scannerRef.current = html5QrCode;
 
-      await html5QrCode.start(
-        { facingMode: "environment" },
-        {
-          fps: 10,
-          qrbox: { width: 220, height: 220 },
-          aspectRatio: 1.0
-        },
-        (decodedText: string) => {
-          handleDetected(decodedText);
-        },
-        () => {
-          // ignore scan frame errors
+      const scanConfig = {
+        fps: 10,
+        qrbox: { width: 220, height: 220 },
+        aspectRatio: 1.0
+      };
+      const onSuccess = (decodedText: string) => {
+        handleDetected(decodedText);
+      };
+      const onFrameError = () => {
+        // ignore scan frame errors
+      };
+
+      try {
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          scanConfig,
+          onSuccess,
+          onFrameError
+        );
+      } catch {
+        // Fallback ke kamera depan / webcam default jika environment tidak tersedia (mis. laptop)
+        const cameras = await Html5Qrcode.getCameras().catch(() => []);
+        if (cameras.length > 0) {
+          await html5QrCode.start(cameras[0].id, scanConfig, onSuccess, onFrameError);
+        } else {
+          await html5QrCode.start({ facingMode: "user" }, scanConfig, onSuccess, onFrameError);
         }
-      );
+      }
 
       if (isMountedRef.current) {
         setIsScanning(true);
@@ -186,8 +207,14 @@ export function QrProfileScanner({
         console.warn("Camera start warning:", err);
         if (isMountedRef.current) {
           setIsScanning(false);
+          const isPermissionDenied =
+            err?.name === "NotAllowedError" ||
+            msg.toLowerCase().includes("permission") ||
+            msg.toLowerCase().includes("denied");
           setCameraError(
-            "Kamera tidak tersedia atau izin akses ditolak. Anda dapat menggunakan upload foto QR atau simulasi di bawah."
+            isPermissionDenied
+              ? "Izin akses kamera ditolak oleh browser. Izinkan kamera atau gunakan Upload Foto QR di bawah."
+              : "Kamera tidak tersedia atau sedang digunakan aplikasi lain. Gunakan Upload Foto QR di bawah."
           );
         }
       }
@@ -247,9 +274,9 @@ export function QrProfileScanner({
 
         {/* Fallback / Error Alert */}
         {cameraError && (
-          <div className="p-4 text-center z-10 space-y-3 bg-slate-900/90 text-white">
-            <AlertCircle className="w-8 h-8 text-amber-400 mx-auto" />
-            <p className="text-xs text-slate-300 leading-relaxed">{cameraError}</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-5 text-center z-10 space-y-3 bg-slate-900/95 text-white">
+            <AlertCircle className="w-8 h-8 text-amber-400 mx-auto shrink-0" />
+            <p className="text-xs text-slate-300 leading-relaxed max-w-[240px]">{cameraError}</p>
             <Button
               size="sm"
               variant="outline"
@@ -314,32 +341,6 @@ export function QrProfileScanner({
         >
           <Camera className="w-3.5 h-3.5 mr-1.5" /> {isScanning ? "Jeda Kamera" : "Aktifkan Kamera"}
         </Button>
-      </div>
-
-      {/* Simulasi Cepat QR Profil Siswa */}
-      <div className="w-full space-y-2 bg-muted/40 p-3 rounded-xl border">
-        <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-          <Sparkles className="w-3.5 h-3.5 text-orange-500" />
-          <span>Simulasi Scan QR Profil Siswa (Scan Berkelanjutan):</span>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {[
-            { name: "Budi Santoso", user: "budi_santoso" },
-            { name: "Siti Rahma", user: "siti_rahma" },
-            { name: "Ahmad Fauzi", user: "ahmad_fauzi" },
-            { name: "Dian Permata", user: "dian_permata" },
-            { name: "Reza Aditya", user: "reza_aditya" }
-          ].map((item) => (
-            <button
-              key={item.user}
-              type="button"
-              onClick={() => handleDetected(`/profile/${item.user}`)}
-              className="text-xs px-2.5 py-1 bg-background hover:bg-orange-50 dark:hover:bg-orange-950/40 text-foreground border rounded-lg transition-colors font-mono"
-            >
-              @{item.user}
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

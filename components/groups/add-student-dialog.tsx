@@ -21,11 +21,21 @@ import {
   AlertCircle,
   Link as LinkIcon,
   Copy,
-  Share2
+  Share2,
+  Send,
+  Clock,
+  Loader2
 } from "lucide-react";
 import { StudentProfile } from "@/data/students-data";
 import { QrProfileScanner, stopAllVideoStreams } from "./qr-profile-scanner";
 import { toast } from "sonner";
+
+function formatGradeLabel(grade?: string | null): string {
+  if (!grade) return "-";
+  return grade
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
 
 interface AddStudentDialogProps {
   open: boolean;
@@ -34,6 +44,8 @@ interface AddStudentDialogProps {
   groupId: string;
   existingStudentIds: string[];
   onStudentAdded: (student: StudentProfile) => void;
+  onStudentInvited?: (student: StudentProfile) => Promise<boolean | void> | boolean | void;
+  pendingInvitedIds?: string[];
   initialTab?: "search" | "qr" | "invite";
 }
 
@@ -44,6 +56,8 @@ export function AddStudentDialog({
   groupId,
   existingStudentIds,
   onStudentAdded,
+  onStudentInvited,
+  pendingInvitedIds = [],
   initialTab = "search"
 }: AddStudentDialogProps) {
   const [activeTab, setActiveTab] = useState<"search" | "qr" | "invite">(initialTab);
@@ -57,6 +71,24 @@ export function AddStudentDialog({
   const [searchResults, setSearchResults] = useState<StudentProfile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasCopied, setHasCopied] = useState(false);
+  const [localInvitedIds, setLocalInvitedIds] = useState<string[]>([]);
+  const [invitingStudentId, setInvitingStudentId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !groupId) return;
+    let cancelled = false;
+    fetch(`/api/groups/${encodeURIComponent(groupId)}/invite`)
+      .then((r) => r.json())
+      .then((res) => {
+        if (!cancelled && res?.success && Array.isArray(res.pendingUserIds)) {
+          setLocalInvitedIds(res.pendingUserIds);
+        }
+      })
+      .catch(() => { });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, groupId]);
 
   // State pop up sukses QR scan (1 detik & bisa ditutup langsung)
   const [qrSuccessMessage, setQrSuccessMessage] = useState<string | null>(null);
@@ -121,15 +153,47 @@ export function AddStudentDialog({
     };
   }, [open]);
 
-  const handleAdd = (student: StudentProfile) => {
+  const handleInvite = async (student: StudentProfile) => {
     if (existingStudentIds.includes(student.id)) {
       toast.warning(`${student.fullname} sudah berada di grup ${groupName}`);
       return;
     }
 
-    onStudentAdded(student);
-    toast.success(`Berhasil menambahkan @${student.username} ke ${groupName}!`);
-    handleOpenChange(false);
+    if (localInvitedIds.includes(student.id) || pendingInvitedIds.includes(student.id)) {
+      toast.info(`Undangan untuk @${student.username} sudah dikirim dan menunggu konfirmasi.`);
+      return;
+    }
+
+    setInvitingStudentId(student.id);
+    try {
+      if (onStudentInvited) {
+        const ok = await onStudentInvited(student);
+        if (ok !== false) {
+          setLocalInvitedIds((prev) =>
+            prev.includes(student.id) ? prev : [...prev, student.id]
+          );
+        }
+      } else {
+        const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/invite`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ studentId: student.id })
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.success) {
+          toast.error(data?.error || `Gagal mengirim undangan ke @${student.username}`);
+          return;
+        }
+        setLocalInvitedIds((prev) =>
+          prev.includes(student.id) ? prev : [...prev, student.id]
+        );
+        toast.success(`Undangan bergabung ke ${groupName} dikirim ke @${student.username}!`);
+      }
+    } catch {
+      toast.error(`Gagal mengirim undangan ke @${student.username}`);
+    } finally {
+      setInvitingStudentId(null);
+    }
   };
 
   // Handler: Scan QR otomatis memasukkan siswa ke grup, pop up 1 detik, lalu bisa lanjut scan
@@ -198,7 +262,7 @@ export function AddStudentDialog({
         >
           <TabsList className="grid w-full grid-cols-3 rounded-xl mb-4">
             <TabsTrigger value="search" className="flex items-center gap-1.5 text-xs py-2">
-              <Search className="w-3.5 h-3.5" /> Ketik Username
+              <Search className="w-3.5 h-3.5" /> Invite Siswa
             </TabsTrigger>
             <TabsTrigger value="qr" className="flex items-center gap-1.5 text-xs py-2">
               <QrCode className="w-3.5 h-3.5" /> Scan QR
@@ -234,6 +298,9 @@ export function AddStudentDialog({
               ) : (
                 searchResults.map((student) => {
                   const isAlreadyInGroup = existingStudentIds.includes(student.id);
+                  const isPendingInvite =
+                    localInvitedIds.includes(student.id) || pendingInvitedIds.includes(student.id);
+                  const isInvitingThis = invitingStudentId === student.id;
                   return (
                     <div
                       key={student.id}
@@ -251,52 +318,37 @@ export function AddStudentDialog({
                             <h4 className="text-sm font-semibold truncate">
                               {student.fullname}
                             </h4>
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                              Lvl {student.level}
-                            </Badge>
                           </div>
                           <p className="text-xs text-muted-foreground truncate">
-                            @{student.username} • {student.grade}
+                            @{student.username} • {formatGradeLabel(student.grade)}
                           </p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-[10px] text-muted-foreground">
-                              Estimasi Ujian:{" "}
-                              <strong className="text-foreground">
-                                {student.predictedExamScore}
-                              </strong>
-                            </span>
-                            <Badge
-                              className={`text-[9px] px-1.5 py-0 ${
-                                student.readinessStatus === "Sangat Siap"
-                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                  : student.readinessStatus === "Siap"
-                                  ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                                  : "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
-                              }`}
-                            >
-                              {student.readinessStatus}
-                            </Badge>
-                          </div>
                         </div>
                       </div>
 
                       <Button
                         size="sm"
-                        disabled={isAlreadyInGroup}
-                        onClick={() => handleAdd(student)}
-                        className={`shrink-0 rounded-xl text-xs font-semibold ${
-                          isAlreadyInGroup
-                            ? "bg-muted text-muted-foreground hover:bg-muted"
-                            : "bg-orange-600 hover:bg-orange-700 text-white"
-                        }`}
+                        disabled={isAlreadyInGroup || isPendingInvite || isInvitingThis}
+                        onClick={() => handleInvite(student)}
+                        className={`shrink-0 rounded-xl text-xs font-semibold ${isAlreadyInGroup || isPendingInvite
+                          ? "bg-muted text-muted-foreground hover:bg-muted"
+                          : "bg-orange-600 hover:bg-orange-700 text-white"
+                          }`}
                       >
-                        {isAlreadyInGroup ? (
+                        {isInvitingThis ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> Mengirim...
+                          </>
+                        ) : isAlreadyInGroup ? (
                           <>
                             <Check className="w-3.5 h-3.5 mr-1" /> Terdaftar
                           </>
+                        ) : isPendingInvite ? (
+                          <>
+                            <Clock className="w-3.5 h-3.5 mr-1" /> Menunggu
+                          </>
                         ) : (
                           <>
-                            <UserPlus className="w-3.5 h-3.5 mr-1" /> Tambahkan
+                            <Send className="w-3.5 h-3.5 mr-1" /> Invite
                           </>
                         )}
                       </Button>
@@ -333,41 +385,29 @@ export function AddStudentDialog({
                 </div>
               </div>
 
-              <div className="space-y-1.5 pt-1">
+              <div className="space-y-2 pt-1">
                 <label className="text-[11px] font-semibold text-muted-foreground">
                   Tautan Undangan Grup ({groupName}):
                 </label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    readOnly
-                    value={inviteLink}
-                    className="text-xs font-mono bg-background rounded-xl"
-                  />
-                  <Button
-                    type="button"
-                    onClick={handleCopyLink}
-                    className="shrink-0 rounded-xl text-xs gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
-                  >
-                    {hasCopied ? (
-                      <>
-                        <Check className="w-3.5 h-3.5" /> Tersalin
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" /> Salin Link
-                      </>
-                    )}
-                  </Button>
+                <div className="rounded-xl border bg-background px-3 py-2.5 text-xs font-mono leading-relaxed break-all select-all text-foreground">
+                  {inviteLink}
                 </div>
+                <Button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className="w-full rounded-xl text-xs gap-1.5 bg-orange-600 hover:bg-orange-700 text-white"
+                >
+                  {hasCopied ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" /> Tersalin
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" /> Salin Link
+                    </>
+                  )}
+                </Button>
               </div>
-            </div>
-
-            <div className="p-3.5 rounded-xl border bg-muted/30 text-xs text-muted-foreground space-y-1">
-              <p className="font-semibold text-foreground">💡 Cara kerja Invited Links:</p>
-              <ul className="list-disc pl-4 space-y-0.5">
-                <li>Siswa yang mengklik link akan otomatis diarahkan masuk ke rombel kelas ini.</li>
-                <li>Profil akun GameForSmart siswa otomatis tersinkronisasi ke daftar kelas guru.</li>
-              </ul>
             </div>
           </TabsContent>
         </Tabs>

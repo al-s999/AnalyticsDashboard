@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import ReCAPTCHA from "react-google-recaptcha";
 
 function LoginFormInner() {
-  const { user, role, login, loginWithGoogle, isLoading } = useAnalyticsAuth();
+  const { user, role, login, loginWithGoogle, isLoading, accessDenied, deniedRole } = useAnalyticsAuth();
   const [formData, setFormData] = useState({
     emailOrUsername: "",
     password: ""
@@ -47,16 +47,23 @@ function LoginFormInner() {
     const errorParam = searchParams.get("error");
     const roleParam = searchParams.get("role");
 
+    if (accessDenied) {
+      setErrorMsg(
+        `Kamu tidak memiliki akses ini. Akun Anda (${deniedRole || "user"}) bukan role untuk Analytics Dashboard.`
+      );
+      return;
+    }
+
     if (errorParam === "unauthorized") {
       const msg = roleParam
-        ? `Akses ditolak: Akun Anda memiliki role '${roleParam}'. Hanya akun dengan role Guru, Pengelola Sekolah, atau Dinas Pendidikan yang diizinkan.`
-        : "Akses ditolak: Hanya akun dengan role Guru, Pengelola Sekolah, atau Dinas Pendidikan yang diizinkan masuk.";
+        ? `Kamu tidak memiliki akses ini. Akun Anda memiliki role '${roleParam}'. Hanya akun Guru, Pengelola Sekolah, atau Dinas Pendidikan yang diizinkan.`
+        : "Kamu tidak memiliki akses ini. Hanya akun Guru, Pengelola Sekolah, atau Dinas Pendidikan yang diizinkan.";
       setErrorMsg(msg);
       toast.error(msg);
     } else if (errorParam === "auth_code_error") {
       setErrorMsg("Gagal melakukan autentikasi Google. Silakan coba lagi.");
     }
-  }, [searchParams]);
+  }, [searchParams, accessDenied, deniedRole]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -202,7 +209,7 @@ function LoginFormInner() {
           <form onSubmit={handleSignIn} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="emailOrUsername" className="text-xs font-semibold">
-                Email
+                Email or Username
               </Label>
               <Input
                 ref={emailInputRef}
@@ -260,23 +267,32 @@ function LoginFormInner() {
               </div>
             )}
 
-            <Button
-              type="submit"
-              disabled={isSubmitting}
-              className="h-10 w-full rounded-xl bg-orange-600 font-semibold text-white hover:bg-orange-700 shadow-sm text-xs gap-1.5"
-            >
-              {isSubmitting ? (
-                <>
-                  <div className="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                  <span>Memverifikasi...</span>
-                </>
-              ) : (
-                <>
-                  <span>Masuk</span>
-                  <ArrowRight className="size-3.5" />
-                </>
-              )}
-            </Button>
+            {(() => {
+              const isFormValid =
+                Boolean(formData.emailOrUsername.trim()) &&
+                Boolean(formData.password) &&
+                (!isRecaptchaConfigured || Boolean(captchaToken));
+
+              return (
+                <Button
+                  type="submit"
+                  disabled={isSubmitting || !isFormValid}
+                  className="h-10 w-full rounded-xl bg-orange-600 font-semibold text-white hover:bg-orange-700 shadow-sm text-xs gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <div className="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      <span>Memverifikasi...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Masuk</span>
+                      <ArrowRight className="size-3.5" />
+                    </>
+                  )}
+                </Button>
+              );
+            })()}
           </form>
 
           {/* Hyperlink ke Halaman Registrasi Pendidik */}

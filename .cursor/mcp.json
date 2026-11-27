@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "url": "https://supabase-gameforsmart-1.ubigdev.com/mcp"
+    }
+  }
+}

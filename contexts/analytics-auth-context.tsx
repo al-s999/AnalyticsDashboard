@@ -15,6 +15,8 @@ interface AnalyticsAuthContextType {
   user: AnalyticsUser | null;
   role: UserRole;
   isLoading: boolean;
+  accessDenied: boolean;
+  deniedRole: string | null;
   login: (emailOrUsername: string, password: string) => Promise<boolean>;
   loginWithGoogle: () => Promise<void>;
   switchRole?: (role: UserRole) => void;
@@ -29,6 +31,8 @@ const STORAGE_KEY = "gfs_analytics_user";
 export function AnalyticsAuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AnalyticsUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [deniedRole, setDeniedRole] = useState<string | null>(null);
   const router = useRouter();
 
   // Helper untuk membangun objek AnalyticsUser dari record profil Supabase
@@ -98,14 +102,17 @@ export function AnalyticsAuthProvider({ children }: { children: React.ReactNode 
       const analyticsUser = buildAnalyticsUser(profile, session.user.id, session.user.email);
       if (!analyticsUser) {
         console.warn(
-          `[AnalyticsAuth] User role '${profile.role}' tidak memiliki izin untuk Analytics Dashboard. Menghapus sesi.`
+          `[AnalyticsAuth] User role '${profile.role}' tidak memiliki izin untuk Analytics Dashboard.`
         );
-        await supabase.auth.signOut();
+        setAccessDenied(true);
+        setDeniedRole(profile.role || "user");
         setUser(null);
         localStorage.removeItem(STORAGE_KEY);
         return;
       }
 
+      setAccessDenied(false);
+      setDeniedRole(null);
       setUser(analyticsUser);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(analyticsUser));
     } catch (err) {
@@ -171,8 +178,9 @@ export function AnalyticsAuthProvider({ children }: { children: React.ReactNode 
         const analyticsUser = buildAnalyticsUser(profile, session.user.id, session.user.email);
         if (!analyticsUser) {
           console.warn(`[AnalyticsAuth] Sesi login dengan role '${profile.role}' tidak berhak akses analitik.`);
-          await supabase.auth.signOut();
           if (isMounted) {
+            setAccessDenied(true);
+            setDeniedRole(profile.role || "user");
             setUser(null);
             localStorage.removeItem(STORAGE_KEY);
             setIsLoading(false);
@@ -181,6 +189,8 @@ export function AnalyticsAuthProvider({ children }: { children: React.ReactNode 
         }
 
         if (isMounted) {
+          setAccessDenied(false);
+          setDeniedRole(null);
           setUser(analyticsUser);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(analyticsUser));
           setIsLoading(false);
@@ -304,6 +314,8 @@ export function AnalyticsAuthProvider({ children }: { children: React.ReactNode 
       console.warn("[AnalyticsAuth] Logout error:", err);
     } finally {
       setUser(null);
+      setAccessDenied(false);
+      setDeniedRole(null);
       localStorage.removeItem(STORAGE_KEY);
       // Hapus cookie langsung dari document.cookie
       document.cookie = "auth-token=; path=/; max-age=0; samesite=lax";
@@ -322,6 +334,8 @@ export function AnalyticsAuthProvider({ children }: { children: React.ReactNode 
         user,
         role: activeRole,
         isLoading,
+        accessDenied,
+        deniedRole,
         login,
         loginWithGoogle,
         switchRole,

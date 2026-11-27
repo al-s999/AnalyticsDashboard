@@ -606,25 +606,56 @@ function RegisterForm() {
             )}
 
             {/* Tombol Submit */}
-            <Button
-              type="submit"
-              disabled={isSubmitting}
-              className="h-10 w-full rounded-xl bg-orange-600 font-semibold text-white hover:bg-orange-700 shadow-sm text-xs gap-1.5 mt-2"
-            >
-              {isSubmitting ? (
-                <>
-                  <div className="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                  <span>Memproses Pendaftaran...</span>
-                </>
-              ) : (
-                <>
-                  <span>
-                    Daftar
-                  </span>
-                  <ArrowRight className="size-3.5" />
-                </>
-              )}
-            </Button>
+            {(() => {
+              // Validasi kelengkapan data dasar
+              const hasBaseFields =
+                Boolean(fullname.trim()) &&
+                Boolean(username.trim()) &&
+                Boolean(email.trim()) &&
+                Boolean(password) &&
+                Boolean(confirmPassword) &&
+                password === confirmPassword;
+
+              // Validasi spesifik per role
+              let hasRoleFields = true;
+              if (selectedRole === "teacher") {
+                const hasSchool = Boolean(selectedSchool || schoolNameManual.trim());
+                const hasVerif =
+                  (teacherVerifMethod === "nuptk" && Boolean(nuptk.trim())) ||
+                  (teacherVerifMethod === "school_code" && Boolean(schoolCode.trim()));
+                hasRoleFields = hasSchool && hasVerif;
+              } else if (selectedRole === "school_admin") {
+                const hasSchool = Boolean(selectedSchool || schoolNameManual.trim());
+                const hasAuthCode = Boolean(schoolCode.trim());
+                hasRoleFields = hasSchool && hasAuthCode;
+              } else if (selectedRole.startsWith("dinas")) {
+                const govInfo = parseGovEmailDomain(email.trim());
+                hasRoleFields = Boolean(govInfo);
+              }
+
+              const isCaptchaValid = !isRecaptchaConfigured || Boolean(captchaToken);
+              const isFormValid = hasBaseFields && hasRoleFields && isCaptchaValid;
+
+              return (
+                <Button
+                  type="submit"
+                  disabled={isSubmitting || !isFormValid}
+                  className="h-10 w-full rounded-xl bg-orange-600 font-semibold text-white hover:bg-orange-700 shadow-sm text-xs gap-1.5 mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <div className="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      <span>Memproses Pendaftaran...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Daftar</span>
+                      <ArrowRight className="size-3.5" />
+                    </>
+                  )}
+                </Button>
+              );
+            })()}
           </form>
 
           {/* Link Kembali ke Login */}

@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import {
   CheckSquare,
   Plus,
@@ -14,12 +15,16 @@ import {
   PlayCircle,
   HelpCircle,
   TrendingUp,
-  Calendar,
+  Calendar as CalendarIcon,
   Layers,
-  ChevronRight,
+  Loader2,
   MoreHorizontal,
   Edit,
-  Trash2
+  Trash2,
+  BookOpen,
+  Gamepad2,
+  ArrowRight,
+  Play
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +32,14 @@ import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Combobox } from "@/components/ui/combobox";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { ClockFacePicker } from "@/components/ui/clock-face-picker";
+import { TablePagination } from "@/components/ui/table-pagination";
+import { format } from "date-fns";
+import { id as localeId } from "date-fns/locale";
 import {
   Table,
   TableBody,
@@ -49,6 +62,9 @@ import {
   DialogTitle,
   DialogFooter
 } from "@/components/ui/dialog";
+import { ConfirmActionDialog } from "@/components/ui/confirm-action-dialog";
+import { CreateRoomDialog, type CreateRoomSelection } from "@/components/tasks/create-room-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -59,70 +75,343 @@ import {
 } from "@/components/ui/select";
 import {
   INITIAL_TASKS,
-  INITIAL_TEACHER_GROUPS,
   StudentTask,
   AcademicGroup
 } from "@/data/students-data";
+import { useAnalyticsAuth } from "@/contexts/analytics-auth-context";
+import {
+  fetchTeacherTasks,
+  fetchTeacherTasksPage,
+  createTeacherTasks,
+  updateTeacherTask,
+  deleteTeacherTask,
+  startTaskSession
+} from "@/lib/tasks/client";
+import { isTaskDueToday, getTaskStatusCategory, parseTaskDeadline } from "@/lib/tasks/utils";
 import { toast } from "sonner";
 
+const PAGE_SIZE = 20;
+const TODAY_PAGE_SIZE = 12; // 3 kolom x 4 baris
+
 export default function TeacherTasksPage() {
-  const [groups, setGroups] = useState<AcademicGroup[]>(INITIAL_TEACHER_GROUPS);
-  const [tasks, setTasks] = useState<StudentTask[]>(INITIAL_TASKS);
+  const { user } = useAnalyticsAuth();
+  const [groups, setGroups] = useState<AcademicGroup[]>([]);
+  const [tasks, setTasks] = useState<StudentTask[]>([]);
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>("all");
   const [searchTableQuery, setSearchTableQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [todayPage, setTodayPage] = useState<number>(1);
+  const [paginatedTasks, setPaginatedTasks] = useState<StudentTask[]>([]);
+  const [totalPaginatedTasks, setTotalPaginatedTasks] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(1);
+  const [isLoadingTasksPage, setIsLoadingTasksPage] = useState<boolean>(false);
+  const [tasksRefreshKey, setTasksRefreshKey] = useState<number>(0);
+
+  const nextPageCacheRef = useRef<{
+    key: string;
+    tasks: StudentTask[];
+    total: number;
+    totalPages: number;
+  } | null>(null);
+  const prefetchAbortRef = useRef<AbortController | null>(null);
+
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
+  const [startingSessionTaskId, setStartingSessionTaskId] = useState<string | null>(null);
+  const [roomModalTask, setRoomModalTask] = useState<StudentTask | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "completed">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "reguler" | "prescriptive_remedial">("all");
+  const [dateFilter, setDateFilter] = useState<string>("");
+  const [preselectedStudentIds, setPreselectedStudentIds] = useState<string[]>([]);
 
   // Modal State: Detail & Edit
   const [viewingDetailTask, setViewingDetailTask] = useState<StudentTask | null>(null);
   const [editingTask, setEditingTask] = useState<StudentTask | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editDeadline, setEditDeadline] = useState("");
-  const [editPassingScore, setEditPassingScore] = useState(75);
+  const [editPassingScore, setEditPassingScore] = useState("75");
   const [editType, setEditType] = useState<"reguler" | "prescriptive_remedial">("reguler");
+  const [isEditConfirmOpen, setIsEditConfirmOpen] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [isDeletingTask, setIsDeletingTask] = useState(false);
 
-  // Load persistent groups & tasks from localStorage
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const hasLoadedQuizzesRef = useRef(false);
+
+  // Load persistent groups (lite) & tasks secara paralel dengan Promise.all
   useEffect(() => {
-    try {
-      const savedGroups = localStorage.getItem("gameforsmart_teacher_groups");
-      if (savedGroups) {
-        const parsed = JSON.parse(savedGroups);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setGroups(parsed);
+    let cancelled = false;
+    const loadInitialData = async () => {
+      setIsInitialLoading(true);
+      try {
+        const queryParam = user?.id
+          ? `?lite=1&creator_id=${encodeURIComponent(user.id)}`
+          : "?lite=1";
+        const [groupsData, loadedTasks] = await Promise.all([
+          fetch(`/api/groups${queryParam}`)
+            .then((r) => r.json())
+            .catch(() => null),
+          fetchTeacherTasks(user?.id).catch(() => [] as StudentTask[])
+        ]);
+        if (cancelled) return;
+        if (groupsData?.success && Array.isArray(groupsData.groups)) {
+          setGroups(groupsData.groups);
+        }
+        setTasks(loadedTasks);
+      } catch (err) {
+        console.warn("Gagal fetch data tugas:", err);
+      } finally {
+        if (!cancelled) {
+          setIsInitialLoading(false);
         }
       }
-      const savedTasks = localStorage.getItem("gameforsmart_teacher_tasks");
-      if (savedTasks) {
-        const parsed = JSON.parse(savedTasks);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setTasks(parsed);
-        }
-      }
-    } catch { }
-  }, []);
+    };
 
-  const saveTasks = (updated: StudentTask[]) => {
-    setTasks(updated);
-    try {
-      localStorage.setItem("gameforsmart_teacher_tasks", JSON.stringify(updated));
-    } catch { }
-  };
+    loadInitialData();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchTableQuery.trim());
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchTableQuery]);
+
+  // Reset ke halaman 1 dan hapus cache saat filter kelas atau pencarian berubah
+  useEffect(() => {
+    nextPageCacheRef.current = null;
+    setCurrentPage(1);
+  }, [selectedGroupFilter, debouncedSearchQuery]);
+
+  useEffect(() => {
+    setTodayPage(1);
+  }, [selectedGroupFilter]);
+
+  const buildPageCacheKey = useCallback(
+    (teacherId: string | undefined, groupId: string, page: number, search: string) =>
+      `${teacherId || ""}:${groupId}:${page}:${search}`,
+    []
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    prefetchAbortRef.current?.abort();
+
+    const prefetchNextPage = async (nextPage: number) => {
+      const nextController = new AbortController();
+      prefetchAbortRef.current = nextController;
+      try {
+        const res = await fetchTeacherTasksPage({
+          teacherId: user?.id,
+          groupId: selectedGroupFilter,
+          page: nextPage,
+          limit: PAGE_SIZE,
+          search: debouncedSearchQuery,
+          signal: nextController.signal
+        });
+        if (!cancelled && !nextController.signal.aborted) {
+          nextPageCacheRef.current = {
+            key: buildPageCacheKey(user?.id, selectedGroupFilter, nextPage, debouncedSearchQuery),
+            tasks: res.tasks,
+            total: res.pagination.total,
+            totalPages: res.pagination.totalPages
+          };
+        }
+      } catch {
+        // Abaikan error prefetch / abort
+      }
+    };
+
+    const loadCurrentPage = async () => {
+      const targetKey = buildPageCacheKey(
+        user?.id,
+        selectedGroupFilter,
+        currentPage,
+        debouncedSearchQuery
+      );
+      const cached = nextPageCacheRef.current;
+
+      // Hapus cache lama saat pindah halaman agar tidak membebani memori
+      nextPageCacheRef.current = null;
+
+      if (cached && cached.key === targetKey) {
+        setPaginatedTasks(cached.tasks);
+        setTotalPaginatedTasks(cached.total);
+        setTotalPages(cached.totalPages);
+        if (currentPage < cached.totalPages) {
+          void prefetchNextPage(currentPage + 1);
+        }
+        return;
+      }
+
+      setIsLoadingTasksPage(true);
+      try {
+        const res = await fetchTeacherTasksPage({
+          teacherId: user?.id,
+          groupId: selectedGroupFilter,
+          page: currentPage,
+          limit: PAGE_SIZE,
+          search: debouncedSearchQuery,
+          signal: controller.signal
+        });
+        if (!cancelled) {
+          setPaginatedTasks(res.tasks);
+          setTotalPaginatedTasks(res.pagination.total);
+          setTotalPages(res.pagination.totalPages);
+          if (currentPage < res.pagination.totalPages) {
+            void prefetchNextPage(currentPage + 1);
+          }
+        }
+      } catch (err: any) {
+        if (err?.name !== "AbortError") {
+          console.warn("Gagal memuat halaman tugas:", err);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingTasksPage(false);
+        }
+      }
+    };
+
+    void loadCurrentPage();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      prefetchAbortRef.current?.abort();
+    };
+  }, [
+    user?.id,
+    selectedGroupFilter,
+    currentPage,
+    debouncedSearchQuery,
+    tasksRefreshKey,
+    buildPageCacheKey
+  ]);
 
   // Form State: Buat Baru
   const [newTitle, setNewTitle] = useState("");
-  const [newGroupId, setNewGroupId] = useState(groups[0]?.id || INITIAL_TEACHER_GROUPS[0].id);
-  const [newQuizTitle, setNewQuizTitle] = useState("Kuis Eksponen & Logaritma Tingkat Lanjut");
+  const [newGroupId, setNewGroupId] = useState("all");
+  const [newQuizId, setNewQuizId] = useState("");
+  const [newQuizTitle, setNewQuizTitle] = useState("");
+  const [newQuestionCount, setNewQuestionCount] = useState<number>(10);
+  const [newGameId, setNewGameId] = useState("none");
   const [newType, setNewType] = useState<"reguler" | "prescriptive_remedial">("reguler");
   const [newTargetScope, setNewTargetScope] = useState<"all" | "remedial_only">("all");
-  const [newDeadline, setNewDeadline] = useState("Hari ini, 23:59 WIB");
-  const [newPassingScore, setNewPassingScore] = useState(75);
+  const [newDeadline, setNewDeadline] = useState<Date>(() => {
+    const today = new Date();
+    today.setHours(23, 59, 0, 0);
+    return today;
+  });
+  const [newDeadlineTime, setNewDeadlineTime] = useState("23:59");
+  const [newPassingScore, setNewPassingScore] = useState("75");
+
+  // Available Quizzes & Games from API
+  const [availableQuizzes, setAvailableQuizzes] = useState<any[]>([]);
+  const [availableGames, setAvailableGames] = useState<any[]>([]);
+
+  // Deduplicated game list for options
+  const gameOptions = React.useMemo(() => {
+    const seen = new Set<string>();
+    const list: { value: string; label: string }[] = [{ value: "none", label: "Bebas" }];
+
+    availableGames.forEach((g) => {
+      if (!g?.name) return;
+      const clean = g.name.trim();
+      const norm = clean.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!norm || norm === "gameforsmart" || norm === "gameforsmartcom") return;
+      if (!seen.has(norm)) {
+        seen.add(norm);
+        list.push({
+          value: clean,
+          label: clean
+        });
+      }
+    });
+
+    return list;
+  }, [availableGames]);
+
+  // Lazy-load quizzes & games hanya saat modal Buat Tugas dibuka
+  useEffect(() => {
+    if (!isCreateTaskOpen || hasLoadedQuizzesRef.current) return;
+    hasLoadedQuizzesRef.current = true;
+    const fetchQuizzesAndGames = async () => {
+      try {
+        const res = await fetch(`/api/quizzes-and-games?userId=${encodeURIComponent(user?.id || "")}`);
+        const data = await res.json();
+        if (data.success) {
+          if (Array.isArray(data.quizzes)) {
+            setAvailableQuizzes(data.quizzes);
+            const validQuizzes = data.quizzes.filter(
+              (q: any) => q.isPublic || (user?.id && q.creatorId === user?.id)
+            );
+            if (validQuizzes.length > 0 && !newQuizId) {
+              setNewQuizId(validQuizzes[0].id);
+              setNewQuizTitle(validQuizzes[0].title);
+              setNewQuestionCount(validQuizzes[0].questionCount || 10);
+            }
+          }
+          if (Array.isArray(data.games)) {
+            setAvailableGames(data.games);
+          }
+        }
+      } catch (err) {
+        hasLoadedQuizzesRef.current = false;
+        console.warn("Failed fetching quizzes/games:", err);
+      }
+    };
+    fetchQuizzesAndGames();
+  }, [isCreateTaskOpen, user?.id]);
+
+  // Tangkap konteks 1-Klik Remedial dari URL (?remedial=1&groupId=...&studentIds=...&title=...)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("remedial") === "1") {
+      const qGroupId = params.get("groupId");
+      const qStudentIds = params.get("studentIds");
+      const qTitle = params.get("title");
+
+      setNewType("prescriptive_remedial");
+      setNewTargetScope("remedial_only");
+      if (qGroupId) setNewGroupId(qGroupId);
+      if (qStudentIds) {
+        setPreselectedStudentIds(
+          qStudentIds
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        );
+      }
+      if (qTitle) {
+        setNewTitle(qTitle);
+      } else {
+        setNewTitle("Remedial Pemahaman Kuis");
+      }
+      setIsCreateTaskOpen(true);
+    }
+  }, []);
 
   // Filter tasks by group
   const filteredTasks = tasks.filter(
     (t) => selectedGroupFilter === "all" || t.groupId === selectedGroupFilter
   );
 
-  // Tugas Hari Ini
-  const todayTasks = filteredTasks.slice(0, 2);
+  // Tugas Hari Ini (filter tanggal jatuh tempo hari ini, 3 kolom x 4 baris = 12 per halaman)
+  const allTodayTasks = filteredTasks.filter((t) => isTaskDueToday(t.deadline));
+  const todayTotalPages = Math.max(1, Math.ceil(allTodayTasks.length / TODAY_PAGE_SIZE));
+  const safeTodayPage = Math.min(todayPage, todayTotalPages);
+  const todayTasks = allTodayTasks.slice(
+    (safeTodayPage - 1) * TODAY_PAGE_SIZE,
+    safeTodayPage * TODAY_PAGE_SIZE
+  );
 
   // KPI Calculations
   const totalTasksCount = filteredTasks.length;
@@ -139,7 +428,7 @@ export default function TeacherTasksPage() {
       ? Math.round(
         validScores.reduce((acc, t) => acc + t.averageScore, 0) / validScores.length
       )
-      : 82;
+      : 0;
 
   const totalNeedsRemedial = filteredTasks.reduce((acc, t) => {
     return (
@@ -153,58 +442,145 @@ export default function TeacherTasksPage() {
   }, 0);
 
   // Handler: Buat Penugasan Baru
-  const handleCreateTask = (e: React.FormEvent) => {
+  const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) {
       toast.error("Judul tugas wajib diisi.");
       return;
     }
 
-    const group = groups.find((g) => g.id === newGroupId) || groups[0] || INITIAL_TEACHER_GROUPS[0];
-
-    let targetStudents = group.students;
-    if (newTargetScope === "remedial_only") {
-      targetStudents = group.students.filter(
-        (s) =>
-          s.readinessStatus === "Perlu Pendampingan" ||
-          s.readinessStatus === "Kritis" ||
-          s.unmasteredTopics.length > 0
-      );
-      if (targetStudents.length === 0) targetStudents = group.students.slice(0, 2);
+    if (!user?.id) {
+      toast.error("Sesi guru tidak ditemukan. Silakan login ulang.");
+      return;
     }
 
-    const newTask: StudentTask = {
-      id: `task-${Date.now().toString(36)}`,
-      title: newTitle.trim(),
-      quizId: `quiz-${Date.now().toString(36)}`,
-      subject: group.subjects?.[0] || group.subject || "Matematika",
-      groupId: group.id,
-      groupName: group.name,
-      type: newType,
-      targetCompetency: "",
-      deadline: newDeadline,
-      passingScore: newPassingScore,
-      totalAssigned: targetStudents.length,
-      completedCount: 0,
-      inProgressCount: 0,
-      notStartedCount: targetStudents.length,
-      averageScore: 0,
-      createdAt: new Date().toISOString().split("T")[0],
-      submissions: targetStudents.map((s) => ({
-        studentId: s.id,
-        studentName: s.fullname,
-        studentUsername: s.username,
-        avatarUrl: s.avatarUrl,
-        status: "belum_mulai",
-        unmasteredSubtopics: s.unmasteredTopics
-      }))
-    };
+    if (groups.length === 0) {
+      toast.error("Harap buat kelas terlebih dahulu sebelum membuat tugas.");
+      return;
+    }
 
-    const updated = [newTask, ...tasks];
-    saveTasks(updated);
-    setIsCreateTaskOpen(false);
-    setNewTitle("");
-    toast.success(`Tugas "${newTask.title}" berhasil dibuat!`);
+    const parsedNewKkm = Number(newPassingScore);
+    if (
+      newPassingScore.trim() === "" ||
+      Number.isNaN(parsedNewKkm) ||
+      parsedNewKkm < 0 ||
+      parsedNewKkm > 100
+    ) {
+      toast.error("Nilai KKM wajib diisi (0 - 100).");
+      return;
+    }
+
+    // Tentukan grup target: jika "all", buat untuk semua kelas
+    const targetGroups = newGroupId === "all"
+      ? groups
+      : [groups.find((g) => g.id === newGroupId) || groups[0]];
+
+    const selectedQuiz = availableQuizzes.find((q) => q.id === newQuizId);
+    const quizTitle = selectedQuiz?.title || newQuizTitle || "Kuis Pilihan";
+    const gameName = newGameId && newGameId !== "none" ? newGameId : undefined;
+    const formattedDeadline = format(newDeadline, "d MMM yyyy, HH:mm", { locale: localeId }) + " WIB";
+
+    const payloads = targetGroups.map((group) => {
+      let targetStudents = group.students || [];
+      if (newTargetScope === "remedial_only") {
+        if (preselectedStudentIds.length > 0) {
+          targetStudents = (group.students || []).filter((s) =>
+            preselectedStudentIds.includes(s.id)
+          );
+        } else {
+          targetStudents = (group.students || []).filter(
+            (s) =>
+              (s.predictedExamScore ?? s.accuracyRate) < parsedNewKkm ||
+              s.readinessStatus === "Cukup" ||
+              s.readinessStatus === "Kurang" ||
+              s.unmasteredTopics.length > 0
+          );
+        }
+        if (targetStudents.length === 0) targetStudents = (group.students || []).slice(0, 2);
+      }
+
+      return {
+        teacherId: user.id,
+        groupId: group.id,
+        groupName: group.name,
+        title: newTitle.trim(),
+        quizId: newQuizId || undefined,
+        quizTitle,
+        questionCount: newQuestionCount,
+        gameId: gameName,
+        gameName,
+        subject: group.subjects?.[0] || group.subject || "Matematika",
+        type: newType,
+        targetScope: newTargetScope,
+        targetCompetency: "",
+        deadline: formattedDeadline,
+        passingScore: parsedNewKkm,
+        studentIds: targetStudents.map((s) => s.id)
+      };
+    });
+
+    try {
+      const createdTasks = await createTeacherTasks(payloads);
+      setTasks((prev) => [...createdTasks, ...prev]);
+      nextPageCacheRef.current = null;
+      if (currentPage === 1) {
+        setTasksRefreshKey((k) => k + 1);
+      } else {
+        setCurrentPage(1);
+      }
+      setIsCreateTaskOpen(false);
+      setNewTitle("");
+      setPreselectedStudentIds([]);
+      if (newGroupId === "all") {
+        toast.success(`Tugas "${newTitle}" berhasil dibuat untuk ${targetGroups.length} kelas!`);
+      } else {
+        toast.success(`Tugas "${newTitle}" berhasil dibuat!`);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal menyimpan tugas ke database.");
+    }
+  };
+
+  // Handler: Mulai atau Buka Sesi Room untuk tugas yang sudah ada
+  const handleStartTaskSession = async (
+    task: StudentTask,
+    selection?: CreateRoomSelection
+  ) => {
+    setStartingSessionTaskId(task.id);
+    const hostWindow = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
+
+    try {
+      const res = await startTaskSession(task.id, {
+        hostId: user?.id,
+        gameId: selection?.gameId,
+        gameName: selection?.gameName,
+        durationMinutes: selection?.durationMinutes,
+        questionLimit: selection?.questionLimit,
+        difficulty: selection?.difficulty,
+        gameEndMode: selection?.gameEndMode,
+        allowJoinAfterStart: selection?.allowJoinAfterStart
+      });
+      if (res.task) {
+        setTasks((prev) => prev.map((t) => (t.id === task.id ? res.task! : t)));
+        setPaginatedTasks((prev) => prev.map((t) => (t.id === task.id ? res.task! : t)));
+      }
+      setRoomModalTask(null);
+      if (hostWindow) {
+        hostWindow.location.href = res.redirectUrl;
+      } else if (typeof window !== "undefined") {
+        window.open(res.redirectUrl, "_blank");
+      }
+      toast.success(
+        res.reused
+          ? `Room dibuka kembali (PIN: ${res.gamePin})`
+          : `Sesi room dibuat! PIN: ${res.gamePin}`
+      );
+    } catch (err: any) {
+      if (hostWindow) hostWindow.close();
+      toast.error(err?.message || "Gagal memulai sesi room.");
+    } finally {
+      setStartingSessionTaskId(null);
+    }
   };
 
   // Handler: Buka Modal Edit
@@ -212,11 +588,11 @@ export default function TeacherTasksPage() {
     setEditingTask(task);
     setEditTitle(task.title);
     setEditDeadline(task.deadline);
-    setEditPassingScore(task.passingScore);
+    setEditPassingScore(String(task.passingScore));
     setEditType(task.type);
   };
 
-  // Handler: Simpan Hasil Edit
+  // Handler: Validasi Edit lalu buka modal konfirmasi
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTask) return;
@@ -224,33 +600,69 @@ export default function TeacherTasksPage() {
       toast.error("Judul tugas wajib diisi.");
       return;
     }
-
-    const updated = tasks.map((t) => {
-      if (t.id === editingTask.id) {
-        return {
-          ...t,
-          title: editTitle.trim(),
-          deadline: editDeadline,
-          passingScore: editPassingScore,
-          type: editType
-        };
-      }
-      return t;
-    });
-
-    saveTasks(updated);
-    setEditingTask(null);
-    toast.success("Tugas berhasil diperbarui.");
+    const parsedEditKkm = Number(editPassingScore);
+    if (
+      editPassingScore.trim() === "" ||
+      Number.isNaN(parsedEditKkm) ||
+      parsedEditKkm < 0 ||
+      parsedEditKkm > 100
+    ) {
+      toast.error("Nilai KKM wajib diisi (0 - 100).");
+      return;
+    }
+    setIsEditConfirmOpen(true);
   };
 
-  // Handler: Hapus Tugas
-  const handleDeleteTask = (taskId: string, taskTitle: string) => {
-    const confirmed = window.confirm(`Apakah Anda yakin ingin menghapus tugas "${taskTitle}"?`);
-    if (!confirmed) return;
+  // Handler: Eksekusi Simpan Hasil Edit setelah konfirmasi
+  const handleConfirmSaveEdit = async () => {
+    if (!editingTask) return;
+    setIsSavingEdit(true);
+    try {
+      const updatedTask = await updateTeacherTask(editingTask.id, {
+        title: editTitle.trim(),
+        deadline: editDeadline,
+        passingScore: Number(editPassingScore),
+        type: editType
+      });
 
-    const updated = tasks.filter((t) => t.id !== taskId);
-    saveTasks(updated);
-    toast.info(`Tugas "${taskTitle}" telah dihapus.`);
+      setTasks((prev) => prev.map((t) => (t.id === editingTask.id ? updatedTask : t)));
+      nextPageCacheRef.current = null;
+      setTasksRefreshKey((k) => k + 1);
+      setIsEditConfirmOpen(false);
+      setEditingTask(null);
+      toast.success("Tugas berhasil diperbarui.");
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal memperbarui tugas.");
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  // Handler: Buka modal konfirmasi hapus tugas
+  const handleDeleteTask = (taskId: string, taskTitle: string) => {
+    setDeleteTarget({ id: taskId, title: taskTitle });
+  };
+
+  // Handler: Eksekusi hapus tugas setelah konfirmasi
+  const handleConfirmDeleteTask = async () => {
+    if (!deleteTarget) return;
+    setIsDeletingTask(true);
+    try {
+      await deleteTeacherTask(deleteTarget.id);
+      setTasks((prev) => prev.filter((t) => t.id !== deleteTarget.id));
+      nextPageCacheRef.current = null;
+      if (paginatedTasks.length === 1 && currentPage > 1) {
+        setCurrentPage((p) => Math.max(1, p - 1));
+      } else {
+        setTasksRefreshKey((k) => k + 1);
+      }
+      toast.info(`Tugas "${deleteTarget.title}" telah dihapus.`);
+      setDeleteTarget(null);
+    } catch (err: any) {
+      toast.error(err?.message || "Gagal menghapus tugas.");
+    } finally {
+      setIsDeletingTask(false);
+    }
   };
 
   // Filter Table All Tasks
@@ -274,7 +686,7 @@ export default function TeacherTasksPage() {
 
         <div className="flex flex-wrap items-center gap-2.5">
           <Select value={selectedGroupFilter} onValueChange={setSelectedGroupFilter}>
-            <SelectTrigger className="h-9 w-fit min-w-[140px] max-w-[220px] text-xs font-semibold rounded-xl bg-background border-orange-200 dark:border-zinc-800 shadow-2xs gap-2">
+            <SelectTrigger className="h-9 w-fit min-w-[140px] max-w-full text-xs font-semibold rounded-xl bg-background border-orange-200 dark:border-zinc-800 shadow-2xs gap-2">
               <Users className="w-3.5 h-3.5 text-orange-600 shrink-0" />
               <SelectValue placeholder="Semua Kelas" />
             </SelectTrigger>
@@ -301,117 +713,233 @@ export default function TeacherTasksPage() {
       </div>
 
       {/* 2. KPI Cards */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          title="Total Tugas"
-          value={totalTasksCount}
-          icon="play"
-        />
+      {isInitialLoading ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} className="rounded-2xl border p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <Skeleton className="h-3.5 w-24" />
+                <Skeleton className="h-8 w-8 rounded-xl" />
+              </div>
+              <Skeleton className="h-7 w-16" />
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            title="Total Tugas"
+            value={totalTasksCount}
+            icon="play"
+          />
 
-        <StatCard
-          title="Rata-Rata Nilai"
-          value={avgTaskScore}
-          icon="target"
-        />
+          <StatCard
+            title="Rata-rata Nilai"
+            value={avgTaskScore}
+            icon="target"
+          />
 
-        <StatCard
-          title="Tingkat Selesai"
-          value={`${overallCompletionRate}%`}
-          icon="help"
-        />
+          <StatCard
+            title="Tingkat Selesai"
+            value={`${overallCompletionRate}%`}
+            icon="help"
+          />
 
-        <StatCard
-          title="Perlu Remedial"
-          value={`${totalNeedsRemedial} Siswa`}
-          icon="alert"
-        />
-      </div>
+          <StatCard
+            title="Perlu Remedial"
+            value={`${totalNeedsRemedial} Siswa`}
+            icon="alert"
+          />
+        </div>
+      )}
 
       {/* 3. Bagian: Tugas Hari Ini */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-orange-600" />
+            <CalendarIcon className="w-4 h-4 text-orange-600" />
             <h2 className="text-base font-bold text-foreground">Tugas Hari Ini</h2>
+            <Badge variant="outline" className="text-[10px] font-semibold">
+              {allTodayTasks.length} tugas
+            </Badge>
           </div>
-          <span className="text-xs text-muted-foreground font-medium">
-            {todayTasks.length} tugas aktif hari ini
-          </span>
+          <Link
+            href="/dashboard/teacher/tasks/today"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-orange-600 hover:text-orange-700"
+          >
+            <span>Lihat Semua</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
         </div>
 
-        {todayTasks.length === 0 ? (
+        {isInitialLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="p-4 rounded-2xl border bg-card space-y-3">
+                <div className="flex items-center justify-between">
+                  <Skeleton className="h-4 w-24 rounded-full" />
+                  <Skeleton className="h-4 w-12 rounded-full" />
+                </div>
+                <Skeleton className="h-5 w-3/4" />
+                <Skeleton className="h-3 w-1/2" />
+                <Skeleton className="h-2 w-full rounded-full" />
+              </div>
+            ))}
+          </div>
+        ) : todayTasks.length === 0 ? (
           <div className="p-6 text-center text-xs text-muted-foreground border rounded-2xl bg-card">
             Tidak ada tugas yang dijadwalkan hari ini.
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            {todayTasks.map((task) => {
-              const percent =
-                task.totalAssigned > 0
-                  ? Math.round((task.completedCount / task.totalAssigned) * 100)
-                  : 0;
-
-              return (
-                <div
-                  key={task.id}
-                  className="p-4 rounded-2xl border transition-all text-left flex flex-col justify-between gap-3 shadow-2xs bg-card hover:border-slate-300 dark:hover:border-zinc-700"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant="outline"
-                          className={`text-[10px] font-semibold px-2 py-0 border-transparent ${task.type === "prescriptive_remedial"
-                            ? "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300"
-                            : "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
-                            }`}
-                        >
-                          {task.type === "prescriptive_remedial" ? "Remedial" : "Tugas"}
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {todayTasks.map((task) => {
+                return (
+                  <Link
+                    key={task.id}
+                    href={`/dashboard/teacher/tasks/${task.id}`}
+                    className="p-4 rounded-2xl border transition-all text-left flex flex-col justify-between gap-3 shadow-2xs bg-card hover:border-orange-300 dark:hover:border-orange-800"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] font-semibold px-2 py-0 border-transparent ${task.type === "prescriptive_remedial"
+                              ? "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300"
+                              : "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300"
+                              }`}
+                          >
+                            {task.type === "prescriptive_remedial" ? "Remedial" : "Tugas"}
+                          </Badge>
+                          {task.gamePin && (
+                            <Badge
+                              variant="outline"
+                              className="ml-1 text-[10px] font-mono font-bold px-1.5 py-0 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20"
+                            >
+                              PIN: {task.gamePin}
+                            </Badge>
+                          )}
+                          <span className="text-xs font-semibold text-muted-foreground">
+                            {task.groupName}
+                          </span>
+                        </div>
+                        <Badge variant="outline" className="text-[11px] font-semibold">
+                          KKM: {task.passingScore}
                         </Badge>
-                        <span className="text-xs font-semibold text-muted-foreground">
-                          {task.groupName}
-                        </span>
                       </div>
-                      <Badge variant="outline" className="text-[11px] font-semibold">
-                        KKM: {task.passingScore}
-                      </Badge>
+
+                      <h3 className="text-sm font-bold text-foreground line-clamp-1">{task.title}</h3>
                     </div>
 
-                    <h3 className="text-sm font-bold text-foreground line-clamp-1">{task.title}</h3>
-                  </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
+                      <span className="flex items-center gap-1 text-[11px]">
+                        <Clock className="w-3.5 h-3.5 text-orange-500" />
+                        Batas: {task.deadline}
+                      </span>
+                      <span className="font-semibold text-foreground text-[11px]">
+                        {task.completedCount}/{task.totalAssigned} Siswa
+                      </span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
 
-                  <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
-                    <span className="flex items-center gap-1 text-[11px]">
-                      <Clock className="w-3.5 h-3.5 text-orange-500" />
-                      Batas: {task.deadline}
-                    </span>
-                    <span className="font-semibold text-foreground text-[11px]">
-                      {task.completedCount}/{task.totalAssigned} Siswa
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
+            {todayTotalPages > 1 && (
+              <TablePagination
+                currentPage={safeTodayPage}
+                totalPages={todayTotalPages}
+                onPageChange={setTodayPage}
+              />
+            )}
           </div>
         )}
       </div>
 
       {/* 4. Bagian: Tabel Semua Tugas */}
-      <Card className="rounded-2xl shadow-sm border overflow-hidden">
-        <CardHeader className="px-5 py-2 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <Card className="rounded-2xl shadow-sm border overflow-hidden gap-0 py-0">
+        <CardHeader className="px-5 py-3 border-b flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
           <div className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-orange-600" />
             <CardTitle className="text-base font-bold text-foreground">Semua Tugas</CardTitle>
           </div>
 
-          <div className="relative w-full sm:w-72">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Cari nama tugas atau kelas..."
-              value={searchTableQuery}
-              onChange={(e) => setSearchTableQuery(e.target.value)}
-              className="h-8 pl-8 text-xs rounded-xl"
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={statusFilter}
+              onValueChange={(v) =>
+                setStatusFilter(v as "all" | "active" | "completed")
+              }
+            >
+              <SelectTrigger className="w-36 h-8 text-xs rounded-xl">
+                <SelectValue placeholder="Status Tugas" />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                <SelectItem value="all" className="text-xs">
+                  Semua Status
+                </SelectItem>
+                <SelectItem value="active" className="text-xs">
+                  Aktif
+                </SelectItem>
+                <SelectItem value="completed" className="text-xs">
+                  Selesai
+                </SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={typeFilter}
+              onValueChange={(v) =>
+                setTypeFilter(v as "all" | "reguler" | "prescriptive_remedial")
+              }
+            >
+              <SelectTrigger className="w-36 h-8 text-xs rounded-xl">
+                <SelectValue placeholder="Tipe Tugas" />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                <SelectItem value="all" className="text-xs">
+                  Semua Tipe
+                </SelectItem>
+                <SelectItem value="reguler" className="text-xs">
+                  Tugas
+                </SelectItem>
+                <SelectItem value="prescriptive_remedial" className="text-xs">
+                  Remedial
+                </SelectItem>
+              </SelectContent>
+            </Select>
+
+            <div className="flex items-center gap-1">
+              <Input
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="h-8 w-36 text-xs rounded-xl"
+                aria-label="Filter tanggal tugas"
+              />
+              {dateFilter && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDateFilter("")}
+                  className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground rounded-xl"
+                >
+                  Reset
+                </Button>
+              )}
+            </div>
+
+            <div className="relative w-full sm:w-56">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Cari..."
+                value={searchTableQuery}
+                onChange={(e) => setSearchTableQuery(e.target.value)}
+                className="h-8 pl-8 text-xs rounded-xl"
+              />
+            </div>
           </div>
         </CardHeader>
 
@@ -425,36 +953,78 @@ export default function TeacherTasksPage() {
                   <TableHead className="font-semibold">Kelas</TableHead>
                   <TableHead className="font-semibold">Tipe</TableHead>
                   <TableHead className="text-center font-semibold">Progres Pengerjaan</TableHead>
-                  <TableHead className="text-center font-semibold">Rata-Rata Nilai</TableHead>
+                  <TableHead className="text-center font-semibold">Rata-rata Nilai</TableHead>
                   <TableHead className="font-semibold">Batas Waktu</TableHead>
                   <TableHead className="pr-4 text-right font-semibold">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
 
               <TableBody>
-                {displayedAllTasks.length === 0 ? (
+                {isLoadingTasksPage && paginatedTasks.length === 0 ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="pl-4"><Skeleton className="h-4 w-5" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-44" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-20 rounded-full" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-16 rounded-full" /></TableCell>
+                      <TableCell className="text-center"><Skeleton className="h-4 w-10 mx-auto" /></TableCell>
+                      <TableCell className="text-center"><Skeleton className="h-4 w-8 mx-auto" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                      <TableCell className="pr-4 text-right"><Skeleton className="h-7 w-7 ml-auto rounded-lg" /></TableCell>
+                    </TableRow>
+                  ))
+                ) : paginatedTasks.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="text-center py-8 text-xs text-muted-foreground">
                       Tidak ada tugas yang cocok dengan pencarian.
                     </TableCell>
                   </TableRow>
-                ) : (
-                  displayedAllTasks.map((task, index) => {
-                    const percent =
-                      task.totalAssigned > 0
-                        ? Math.round((task.completedCount / task.totalAssigned) * 100)
-                        : 0;
+                ) : (() => {
+                  const tabFilteredTasks = paginatedTasks.filter((task) => {
+                    const statusCat = getTaskStatusCategory(task);
+                    if (statusFilter === "active" && statusCat !== "aktif") return false;
+                    if (statusFilter === "completed" && statusCat !== "selesai") return false;
 
+                    if (typeFilter !== "all" && task.type !== typeFilter) return false;
+
+                    if (dateFilter) {
+                      const d = parseTaskDeadline(task.deadline);
+                      if (!d) return false;
+                      const yyyy = d.getFullYear();
+                      const mm = String(d.getMonth() + 1).padStart(2, "0");
+                      const dd = String(d.getDate()).padStart(2, "0");
+                      if (`${yyyy}-${mm}-${dd}` !== dateFilter) return false;
+                    }
+
+                    return true;
+                  });
+
+                  if (tabFilteredTasks.length === 0) {
+                    return (
+                      <TableRow>
+                        <TableCell colSpan={8} className="text-center py-8 text-xs text-muted-foreground">
+                          Tidak ada tugas yang cocok dengan filter tab ini.
+                        </TableCell>
+                      </TableRow>
+                    );
+                  }
+
+                  return tabFilteredTasks.map((task, index) => {
                     return (
                       <TableRow
                         key={task.id}
                         className="transition-colors text-xs hover:bg-muted/40"
                       >
                         <TableCell className="pl-4 font-semibold text-muted-foreground">
-                          {index + 1}
+                          {(currentPage - 1) * PAGE_SIZE + index + 1}
                         </TableCell>
                         <TableCell>
-                          <div className="font-bold text-foreground">{task.title}</div>
+                          <Link
+                            href={`/dashboard/teacher/tasks/${task.id}`}
+                            className="font-bold text-foreground hover:text-orange-600 transition-colors"
+                          >
+                            {task.title}
+                          </Link>
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline" className="text-[10px] font-semibold">
@@ -470,6 +1040,14 @@ export default function TeacherTasksPage() {
                           >
                             {task.type === "prescriptive_remedial" ? "Remedial" : "Tugas"}
                           </Badge>
+                          {task.gamePin && (
+                            <Badge
+                              variant="outline"
+                              className="ml-1 text-[10px] font-mono font-bold px-1.5 py-0 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20"
+                            >
+                              PIN: {task.gamePin}
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           <span className="font-semibold text-foreground">
@@ -502,13 +1080,28 @@ export default function TeacherTasksPage() {
                                 <MoreHorizontal className="w-4 h-4" />
                               </Button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-36 rounded-xl text-xs">
+                            <DropdownMenuContent align="end" className="w-44 rounded-xl text-xs">
+                              <DropdownMenuItem asChild className="cursor-pointer gap-2 py-1.5">
+                                <Link href={`/dashboard/teacher/tasks/${task.id}`}>
+                                  <Eye className="w-3.5 h-3.5 text-blue-600" />
+                                  <span>Detail</span>
+                                </Link>
+                              </DropdownMenuItem>
                               <DropdownMenuItem
-                                onClick={() => setViewingDetailTask(task)}
-                                className="cursor-pointer gap-2 py-1.5"
+                                disabled={startingSessionTaskId === task.id}
+                                onClick={() =>
+                                  task.sessionId
+                                    ? handleStartTaskSession(task)
+                                    : setRoomModalTask(task)
+                                }
+                                className="cursor-pointer gap-2 py-1.5 text-emerald-600 focus:text-emerald-600 focus:bg-emerald-50 dark:focus:bg-emerald-950/40"
                               >
-                                <Eye className="w-3.5 h-3.5 text-blue-600" />
-                                <span>Detail</span>
+                                {startingSessionTaskId === task.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                )}
+                                <span>{task.sessionId ? "Masuk Room" : "Buat Room"}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 onClick={() => handleOpenEdit(task)}
@@ -523,18 +1116,27 @@ export default function TeacherTasksPage() {
                                 className="cursor-pointer gap-2 py-1.5 text-red-600 focus:text-red-600 focus:bg-red-50 dark:focus:bg-red-950/40"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
-                                <span>Delete</span>
+                                <span>Hapus</span>
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
                       </TableRow>
                     );
-                  })
-                )}
+                  });
+                })()}
               </TableBody>
             </Table>
           </div>
+
+          {totalPaginatedTasks > 0 && (
+            <TablePagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              isLoading={isLoadingTasksPage}
+              onPageChange={setCurrentPage}
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -544,12 +1146,12 @@ export default function TeacherTasksPage() {
           <DialogHeader className="pb-2 border-b">
             <DialogTitle className="text-base font-bold flex items-center gap-2">
               <CheckSquare className="w-4 h-4 text-orange-600" />
-              Buat Tugas Baru
+              Buat Tugas
             </DialogTitle>
           </DialogHeader>
 
           <form onSubmit={handleCreateTask} className="space-y-3.5 pt-2">
-            <div className="space-y-1">
+            <div className="space-y-2">
               <Label className="text-xs">Judul Tugas</Label>
               <Input
                 placeholder="Contoh: Latihan Mandiri Eksponen"
@@ -561,13 +1163,14 @@ export default function TeacherTasksPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-2.5">
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <Label className="text-xs">Kelas Sasaran</Label>
                 <Select value={newGroupId} onValueChange={setNewGroupId}>
-                  <SelectTrigger className="h-8 text-xs rounded-xl">
-                    <SelectValue />
+                  <SelectTrigger className="h-8 w-full text-xs rounded-xl">
+                    <SelectValue placeholder="Pilih Kelas" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="all">Semua Kelas</SelectItem>
                     {groups.map((g) => (
                       <SelectItem key={g.id} value={g.id}>
                         {g.name}
@@ -577,59 +1180,144 @@ export default function TeacherTasksPage() {
                 </Select>
               </div>
 
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <Label className="text-xs">Tipe</Label>
                 <Select value={newType} onValueChange={(v: any) => setNewType(v)}>
-                  <SelectTrigger className="h-8 text-xs rounded-xl">
+                  <SelectTrigger className="h-8 w-full text-xs rounded-xl">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="reguler">Tugas</SelectItem>
-                    <SelectItem value="prescriptive_remedial">Remedial Terarah</SelectItem>
+                    <SelectItem value="prescriptive_remedial">Remedial</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs">Pilih Kuis Soal</Label>
-              <Select value={newQuizTitle} onValueChange={setNewQuizTitle}>
-                <SelectTrigger className="h-8 text-xs rounded-xl">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Kuis Eksponen & Logaritma Tingkat Lanjut">
-                    Kuis Eksponen & Logaritma (15 Soal)
-                  </SelectItem>
-                  <SelectItem value="Latihan Aljabar & Persamaan Linear">
-                    Latihan Aljabar & Linear (10 Soal)
-                  </SelectItem>
-                  <SelectItem value="Kuis Trigonometri Dasar Segitiga Siku-Siku">
-                    Kuis Trigonometri (12 Soal)
-                  </SelectItem>
-                  <SelectItem value="Remedial Terarah: Operasi Bentuk Akar">
-                    Remedial Operasi Bentuk Akar (8 Soal)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="space-y-2">
+              <label className="text-xs font-medium flex items-center gap-1.5 text-muted-foreground">
+                <BookOpen className="h-3.5 w-3.5 text-orange-600" />
+                <span>Pilih Kuis Soal</span>
+              </label>
+              <Combobox
+                tabs={[
+                  { id: "public", label: "Public Quiz", icon: <BookOpen className="h-3 w-3" /> },
+                  { id: "my", label: "My Quiz", icon: <Edit className="h-3 w-3" /> },
+                ]}
+                options={[
+                  ...availableQuizzes
+                    .filter((q) => q.isPublic || (user?.id && q.creatorId === user?.id))
+                    .map((q) => ({
+                      value: q.id,
+                      label: q.title,
+                      group: user?.id && q.creatorId === user?.id ? "my" : "public",
+                    }))
+                ]}
+                value={newQuizId}
+                onValueChange={(val) => {
+                  setNewQuizId(val);
+                  const selected = availableQuizzes.find((q) => q.id === val);
+                  if (selected) {
+                    setNewQuizTitle(selected.title);
+                    if (selected.questionCount) {
+                      setNewQuestionCount(selected.questionCount);
+                    }
+                  }
+                }}
+                placeholder="Pilih kuis soal..."
+                searchPlaceholder="Cari kuis soal..."
+                emptyText="Tidak ada kuis ditemukan."
+                className="w-full h-8 text-xs rounded-xl"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs">
+                Jumlah Soal
+              </Label>
+              {(() => {
+                const maxQ = availableQuizzes.find((q) => q.id === newQuizId)?.questionCount || 0;
+                const options: number[] = [];
+                if (maxQ >= 5) options.push(5);
+                for (let i = 10; i < maxQ; i += 10) {
+                  options.push(i);
+                }
+                if (maxQ > 0 && !options.includes(maxQ)) options.push(maxQ);
+                return (
+                  <Select
+                    value={String(newQuestionCount)}
+                    onValueChange={(v) => setNewQuestionCount(parseInt(v) || 1)}
+                  >
+                    <SelectTrigger className="h-8 text-xs rounded-xl w-full">
+                      <SelectValue placeholder="Pilih jumlah soal" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {options.length > 0 ? options.map((n) => (
+                        <SelectItem key={n} value={String(n)}>
+                          {n} Soal
+                        </SelectItem>
+                      )) : (
+                        <SelectItem value={String(newQuestionCount)}>
+                          {newQuestionCount}
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                );
+              })()}
             </div>
 
             <div className="grid grid-cols-2 gap-2.5">
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <Label className="text-xs">Batas Waktu</Label>
-                <Input
-                  value={newDeadline}
-                  onChange={(e) => setNewDeadline(e.target.value)}
-                  className="h-8 text-xs rounded-xl"
-                />
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="h-8 w-full justify-start text-xs rounded-xl font-normal"
+                    >
+                      <CalendarIcon className="mr-2 h-3.5 w-3.5 opacity-70" />
+                      {format(newDeadline, "d MMM yyyy, HH:mm", { locale: localeId })} WIB
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start" side="top" sideOffset={6}>
+                    <div className="flex sm:flex-row flex-col divide-y sm:divide-y-0 sm:divide-x">
+                      {/* Kalender */}
+                      <Calendar
+                        mode="single"
+                        selected={newDeadline}
+                        onSelect={(date) => {
+                          if (date) {
+                            const updated = new Date(date);
+                            updated.setHours(newDeadline.getHours(), newDeadline.getMinutes(), 0, 0);
+                            setNewDeadline(updated);
+                          }
+                        }}
+                        disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+                        initialFocus
+                      />
+
+                      {/* 24-Hour Circular Clock Face Picker */}
+                      <div className="flex flex-col p-2">
+                        <ClockFacePicker
+                          value={newDeadline}
+                          onChange={(date) => setNewDeadline(date)}
+                        />
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <Label className="text-xs">Nilai KKM</Label>
                 <Input
                   type="number"
+                  min={0}
+                  max={100}
+                  required
                   value={newPassingScore}
-                  onChange={(e) => setNewPassingScore(parseInt(e.target.value) || 75)}
-                  className="h-8 text-xs rounded-xl"
+                  onChange={(e) => setNewPassingScore(e.target.value)}
+                  className="h-8 text-xs rounded-xl [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
                 />
               </div>
             </div>
@@ -649,7 +1337,7 @@ export default function TeacherTasksPage() {
                 size="sm"
                 className="rounded-xl text-xs bg-orange-600 hover:bg-orange-700 text-white"
               >
-                Simpan & Tugaskan
+                Tambah
               </Button>
             </DialogFooter>
           </form>
@@ -668,7 +1356,7 @@ export default function TeacherTasksPage() {
             </DialogHeader>
 
             <form onSubmit={handleSaveEdit} className="space-y-3.5 pt-2">
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <Label className="text-xs">Judul Tugas</Label>
                 <Input
                   value={editTitle}
@@ -679,7 +1367,7 @@ export default function TeacherTasksPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <Label className="text-xs">Kelas</Label>
                   <Input
                     value={editingTask.groupName}
@@ -688,7 +1376,7 @@ export default function TeacherTasksPage() {
                   />
                 </div>
 
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <Label className="text-xs">Tipe</Label>
                   <Select value={editType} onValueChange={(v: any) => setEditType(v)}>
                     <SelectTrigger className="h-8 text-xs rounded-xl">
@@ -696,14 +1384,14 @@ export default function TeacherTasksPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="reguler">Tugas</SelectItem>
-                      <SelectItem value="prescriptive_remedial">Remedial Terarah</SelectItem>
+                      <SelectItem value="prescriptive_remedial">Remedial</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <Label className="text-xs">Batas Waktu</Label>
                   <Input
                     value={editDeadline}
@@ -711,12 +1399,15 @@ export default function TeacherTasksPage() {
                     className="h-8 text-xs rounded-xl"
                   />
                 </div>
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <Label className="text-xs">Nilai KKM</Label>
                   <Input
                     type="number"
+                    min={0}
+                    max={100}
+                    required
                     value={editPassingScore}
-                    onChange={(e) => setEditPassingScore(parseInt(e.target.value) || 75)}
+                    onChange={(e) => setEditPassingScore(e.target.value)}
                     className="h-8 text-xs rounded-xl"
                   />
                 </div>
@@ -791,7 +1482,7 @@ export default function TeacherTasksPage() {
                 </div>
                 {viewingDetailTask.averageScore > 0 && (
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Rata-Rata Nilai:</span>
+                    <span className="text-muted-foreground">Rata-rata Nilai:</span>
                     <span className="font-bold text-emerald-600">{viewingDetailTask.averageScore}</span>
                   </div>
                 )}
@@ -811,6 +1502,45 @@ export default function TeacherTasksPage() {
           </DialogContent>
         )}
       </Dialog>
+
+      {/* Modal 4: Pilih Game / App untuk Buat Room */}
+      <CreateRoomDialog
+        open={!!roomModalTask}
+        onOpenChange={(open) => !open && setRoomModalTask(null)}
+        defaultGameId={roomModalTask?.gameId}
+        isSubmitting={!!roomModalTask && startingSessionTaskId === roomModalTask.id}
+        onConfirm={(selection) => {
+          if (roomModalTask) {
+            return handleStartTaskSession(roomModalTask, selection);
+          }
+        }}
+      />
+
+      {/* Modal 5: Konfirmasi Simpan Perubahan Edit Tugas */}
+      <ConfirmActionDialog
+        open={isEditConfirmOpen}
+        onOpenChange={setIsEditConfirmOpen}
+        variant="warning"
+        isLoading={isSavingEdit}
+        title="Simpan Perubahan Tugas?"
+        description={`Simpan perubahan pada tugas "${editTitle.trim()}"?`}
+        confirmLabel="Iya"
+        cancelLabel="Batal"
+        onConfirm={handleConfirmSaveEdit}
+      />
+
+      {/* Modal 5: Konfirmasi Hapus Tugas */}
+      <ConfirmActionDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        variant="destructive"
+        isLoading={isDeletingTask}
+        title="Hapus Tugas?"
+        description={`Hapus tugas "${deleteTarget?.title ?? ""}" secara permanen?`}
+        confirmLabel="Iya"
+        cancelLabel="Batal"
+        onConfirm={handleConfirmDeleteTask}
+      />
     </div>
   );
 }

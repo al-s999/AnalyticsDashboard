@@ -1,99 +1,56 @@
+import { createClient } from "@/lib/supabase-server";
 import { NextResponse } from "next/server";
-import { INDONESIAN_SCHOOLS_DATA, IndonesianSchool } from "@/data/indonesian-schools";
 
 // ─── GET /api/schools/search?q=...&level=...&limit=... ────────────────────
+// Mencari sekolah berdasarkan nama atau NPSN dari tabel public.schools (Supabase).
+// Mengembalikan maksimal 20 hasil (default) untuk autocomplete dropdown.
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const q = (searchParams.get("q") || "").trim().toLowerCase();
-    const level = (searchParams.get("level") || "").trim().toUpperCase();
-    const limit = Math.min(parseInt(searchParams.get("limit") || "20"), 50);
+    const q = (searchParams.get("q") || "").trim();
+    const level = searchParams.get("level") || "";
+    const defaultLimit = q.length < 2 ? 50 : 20;
+    const limit = Math.min(parseInt(searchParams.get("limit") || String(defaultLimit), 10) || defaultLimit, 50);
 
-    let schools: IndonesianSchool[] = [];
-    let source: "api" | "local_curated" = "local_curated";
+    const supabase = await createClient();
+    const db = supabase as any;
 
-    // 1. Coba panggil Public Indonesian School API dengan timeout 1.5 detik
-    if (q.length >= 3) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
+    let query = db
+      .from("schools")
+      .select("id, npsn, name, level, status, province, city")
+      .order("name")
+      .limit(limit);
 
-        const isNpsnQuery = /^\d+$/.test(q);
-        const apiUrl = isNpsnQuery
-          ? `https://api-sekolah-indonesia.vercel.app/sekolah?npsn=${encodeURIComponent(q)}`
-          : `https://api-sekolah-indonesia.vercel.app/sekolah/s?sekolah=${encodeURIComponent(q)}&perPage=${limit}`;
-
-        const res = await fetch(apiUrl, {
-          signal: controller.signal,
-          headers: { Accept: "application/json" }
-        });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-          const json = await res.json();
-          const rawList = Array.isArray(json.dataSekolah)
-            ? json.dataSekolah
-            : Array.isArray(json.data)
-            ? json.data
-            : json.dataSekolah
-            ? [json.dataSekolah]
-            : [];
-
-          if (rawList.length > 0) {
-            schools = rawList.map((item: any) => ({
-              id: item.id || `sch-${item.npsn || Math.random().toString(36).slice(2, 8)}`,
-              npsn: String(item.npsn || ""),
-              name: String(item.sekolah || item.nama || item.name || "").toUpperCase(),
-              level: (item.bentuk || item.jenjang || "SMA").toUpperCase() as any,
-              status: (item.status || "NEGERI").toUpperCase() as any,
-              province: item.propinsi || item.provinsi || "Jawa Timur",
-              city: item.kabupaten_kota || item.kab_kota || "Surabaya",
-              district: item.kecamatan || "",
-              address: item.alamat_jalan || item.alamat || "Indonesia",
-              postalCode: item.kode_pos || "",
-              totalStudents: Math.floor(Math.random() * 500) + 500,
-              accreditation: item.akreditasi || "A"
-            }));
-            source = "api";
-          }
-        }
-      } catch {
-        // Fallback silently ke dataset curated lokal
+    if (q.length >= 2) {
+      const isNpsn = /^\d+$/.test(q);
+      if (isNpsn) {
+        // Pencarian by NPSN prefix
+        query = query.ilike("npsn", `${q}%`);
+      } else {
+        // Pencarian by nama
+        query = query.ilike("name", `%${q}%`);
       }
     }
 
-    // 2. Jika API eksternal offline / query pendek / tidak ada hasil, filter dataset curated lokal
-    if (schools.length === 0) {
-      schools = INDONESIAN_SCHOOLS_DATA.filter((sch) => {
-        const matchQuery =
-          !q ||
-          sch.npsn.includes(q) ||
-          sch.name.toLowerCase().includes(q) ||
-          sch.city.toLowerCase().includes(q) ||
-          sch.province.toLowerCase().includes(q);
+    // Filter opsional berdasarkan jenjang
+    if (level) {
+      query = query.eq("level", level.toUpperCase());
+    }
 
-        const matchLevel = !level || sch.level === level;
+    const { data: schools, error } = await query;
 
-        return matchQuery && matchLevel;
-      }).slice(0, limit);
+    if (error) {
+      console.error("[schools/search] Supabase error:", error.message);
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     return NextResponse.json({
       success: true,
-      source,
-      total: schools.length,
-      schools
+      total: (schools ?? []).length,
+      schools: schools ?? [],
     });
-  } catch (error: any) {
-    console.error("[api/schools/search] Error:", error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error.message || "Failed to search schools",
-        schools: INDONESIAN_SCHOOLS_DATA.slice(0, 10)
-      },
-      { status: 500 }
-    );
+  } catch (err: any) {
+    console.error("[schools/search] Internal error:", err.message);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
-
